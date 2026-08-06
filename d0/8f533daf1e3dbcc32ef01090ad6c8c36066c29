@@ -1,0 +1,41 @@
+test/surfguard_test.rb
+  s_f934e0fd7e17f7::t_a2dae57fbf6437 5-157
+  s_f934e0fd7e17f7::t_7280f6e7088ba4 1-4,158-159
+MIGRATION.md
+  s_f934e0fd7e17f7::t_6aab5c7793bd53 2-12,15,17-33,35-38,40-41,43-46,48-66,68-121
+  s_f934e0fd7e17f7::t_16a7a94a280c55 1,13-14,16,34,39,42,47,67
+surfguard.gemspec
+  s_f934e0fd7e17f7::t_4d6de10119fda9 3-7
+  s_f934e0fd7e17f7::t_39929763e5d99f 1-2,8-22
+README.md
+  s_f934e0fd7e17f7::t_08c35a936760d9 1,18,23-24,27,30,48,69
+  s_f934e0fd7e17f7::t_10bee543bbeb04 2-17,19-22,25-26,28-29,31-47,49-68,70-77
+LICENSE
+  s_f934e0fd7e17f7::t_946ba69837249a 1-21
+lib/surfguard.rb
+  s_f934e0fd7e17f7::t_f2f0695695f57d 7-127
+  s_f934e0fd7e17f7::t_1a309498462b7e 1-6,128-202
+.gitignore
+  s_f934e0fd7e17f7::t_a5c8052b8fbe20 1-5
+lib/surfguard/version.rb
+  s_f934e0fd7e17f7::t_5e905c2da3955d 3
+  s_f934e0fd7e17f7::t_a16774714da8cd 1-2,4-5
+Rakefile
+  s_f934e0fd7e17f7::t_3098b56cbd7a27 1-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d08f533daf1e3dbcc32ef01090ad6c8c36066c29",
+  "prompts": {},
+  "sessions": {
+    "s_f934e0fd7e17f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4273e010-95d2-423b-aa6e-827cc40f91c2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
