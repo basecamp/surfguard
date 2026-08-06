@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the test job only needs to read the code.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: "Ruby ${{ matrix.ruby }}"
+    runs-on: ubuntu-latest
+    # head tracks unreleased Ruby — surface breakage early without blocking a merge.
+    continue-on-error: ${{ matrix.ruby == 'head' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: [ "3.1", "3.2", "3.3", "3.4", "4.0", "head" ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          # No Gemfile: the gem is stdlib-only and rake/minitest ship with Ruby.
+          bundler-cache: false
+      - run: rake test
