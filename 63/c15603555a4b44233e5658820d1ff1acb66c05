@@ -1,0 +1,36 @@
+README.md
+  s_f934e0fd7e17f7::t_10bee543bbeb04 1-77
+lib/ssrf_guard/version.rb
+  s_f934e0fd7e17f7::t_c964f9f7f47786 1-5
+lib/ssrf_guard.rb
+  s_f934e0fd7e17f7::t_758ae2188c2305 1-202
+Rakefile
+  s_f934e0fd7e17f7::t_3098b56cbd7a27 1-11
+.gitignore
+  s_f934e0fd7e17f7::t_a5c8052b8fbe20 1-5
+test/ssrf_guard_test.rb
+  s_f934e0fd7e17f7::t_e6a2bf38d5de8c 41,45
+  s_f934e0fd7e17f7::t_ffd25854b09f7c 1-40,42-44,46-159
+MIGRATION.md
+  s_f934e0fd7e17f7::t_6aab5c7793bd53 1-121
+LICENSE
+  s_f934e0fd7e17f7::t_946ba69837249a 1-21
+ssrf_guard.gemspec
+  s_f934e0fd7e17f7::t_403a34c9315543 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "63c15603555a4b44233e5658820d1ff1acb66c05",
+  "prompts": {},
+  "sessions": {
+    "s_f934e0fd7e17f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4273e010-95d2-423b-aa6e-827cc40f91c2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
