@@ -1,0 +1,46 @@
+lib/surfguard/version.rb
+  s_f934e0fd7e17f7::t_5e905c2da3955d 3
+  s_f934e0fd7e17f7::t_a16774714da8cd 1-2,4-5
+lib/surfguard.rb
+  s_f934e0fd7e17f7::t_f2f0695695f57d 7-8,12-18,22-89,92-126
+  s_f934e0fd7e17f7::t_ef47026c904f42 132-135
+  s_f934e0fd7e17f7::t_2cbbb4a144c655 90-91
+  s_f934e0fd7e17f7::t_30820ca0a07c84 9-11,19-21
+  s_f934e0fd7e17f7::t_1a309498462b7e 1-6,127-131,136-202
+Rakefile
+  s_f934e0fd7e17f7::t_3098b56cbd7a27 1-11
+README.md
+  s_f934e0fd7e17f7::t_1a3430d83503f0 50-53
+  s_f934e0fd7e17f7::t_33a2f05e8cadc0 3,5-8
+  s_f934e0fd7e17f7::t_08c35a936760d9 1,17,22-23,26,29,47,68
+  s_f934e0fd7e17f7::t_10bee543bbeb04 2,4,9-16,18-21,24,27-28,30-46,48-49,54-67,69-73
+  s_f934e0fd7e17f7::t_ebfe441769319e 25
+  s_f934e0fd7e17f7::t_531ca7a3ad8411 74-75
+.gitignore
+  s_f934e0fd7e17f7::t_a5c8052b8fbe20 1-5
+surfguard.gemspec
+  s_f934e0fd7e17f7::t_a824a3aac837dd 9
+  s_f934e0fd7e17f7::t_39929763e5d99f 1-2,8,10-22
+  s_f934e0fd7e17f7::t_4d6de10119fda9 3-7
+test/surfguard_test.rb
+  s_f934e0fd7e17f7::t_7280f6e7088ba4 1-4,158-159
+  s_f934e0fd7e17f7::t_a2dae57fbf6437 5-157
+LICENSE
+  s_f934e0fd7e17f7::t_946ba69837249a 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "17c591d6323ad4f5757b644666b2e05067d4911d",
+  "prompts": {},
+  "sessions": {
+    "s_f934e0fd7e17f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4273e010-95d2-423b-aa6e-827cc40f91c2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}
