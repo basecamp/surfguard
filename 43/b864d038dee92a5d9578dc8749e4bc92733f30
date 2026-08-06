@@ -1,0 +1,29 @@
+MIGRATION.md
+  s_f934e0fd7e17f7::t_16a7a94a280c55 1,13-14,16,34,39,42,47,67
+README.md
+  s_f934e0fd7e17f7::t_08c35a936760d9 1,18,23-24,27,30,48,69
+lib/surfguard.rb
+  s_f934e0fd7e17f7::t_f2f0695695f57d 7,40,127
+lib/surfguard/version.rb
+  s_f934e0fd7e17f7::t_5e905c2da3955d 3
+surfguard.gemspec
+  s_f934e0fd7e17f7::t_4d6de10119fda9 3,6-7
+test/surfguard_test.rb
+  s_f934e0fd7e17f7::t_a2dae57fbf6437 5,7,63,70,76-77,81,85,100,108,114,121,127,130,136-137,141-142,146-147,152,156-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "43b864d038dee92a5d9578dc8749e4bc92733f30",
+  "prompts": {},
+  "sessions": {
+    "s_f934e0fd7e17f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4273e010-95d2-423b-aa6e-827cc40f91c2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
