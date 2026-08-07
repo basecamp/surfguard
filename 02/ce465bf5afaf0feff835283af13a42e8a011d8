@@ -1,0 +1,40 @@
+lib/surfguard.rb
+  s_47f46552140f1f::t_849127c04fd2d8 113-117,119-125
+  s_47f46552140f1f::t_658544952b8404 200-205
+  s_47f46552140f1f::t_b74b2e7a499f09 131-133,141-144,146-150,154-158,161-163
+  s_47f46552140f1f::t_c48525e6a82059 42-49
+  s_47f46552140f1f::t_7bad96b085ec7f 220-225
+  s_47f46552140f1f::t_8ceff5eef5c683 199,210-216
+  s_c6b6253febb054::t_fcb03b2b523dd9 217-218
+README.md
+  s_47f46552140f1f::t_67c598ba717d0c 41
+  s_47f46552140f1f::t_9548569aaf8596 23,32-40,42-49
+  s_c6b6253febb054::t_e5578a8b6a18ed 50
+test/surfguard_test.rb
+  s_47f46552140f1f::t_c61eb3dd1916c0 159-164,166-221
+  s_47f46552140f1f::t_efa47cde89e0b6 165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "02ce465bf5afaf0feff835283af13a42e8a011d8",
+  "prompts": {},
+  "sessions": {
+    "s_47f46552140f1f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdb2a6a2-ca04-47bc-8dd1-134ae000e6dd",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    },
+    "s_c6b6253febb054": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "614bcc56-21f7-4e3e-9c88-69157fd34265",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Jeremy Daer <jeremy@37signals.com>"
+    }
+  }
+}
