@@ -156,4 +156,67 @@ class SurfguardTest < Minitest::Test
     refute Surfguard.resolvable_public_ip?("http://")
     assert_nil Surfguard.resolve_public_ip("::::not a url")
   end
+
+  # --- unresolvable is not a refusal ------------------------------------------
+
+  def test_unresolvable_is_not_a_violation
+    # The distinction is the point: a caller that stops retrying on Violation
+    # must not stop on a lookup that merely came back empty.
+    refute_includes Surfguard::Unresolvable.ancestors, Surfguard::Violation
+  end
+
+  def test_resolve_public_ip_raises_unresolvable_when_nothing_resolves
+    stub_getaddresses({}) do
+      assert_raises(Surfguard::Unresolvable) do
+        Surfguard.resolve_public_ip("https://nope.example")
+      end
+    end
+  end
+
+  def test_resolve_public_ip_returns_nil_when_resolved_but_blocked
+    # Blocked is nil, not Unresolvable — the host answered, we refused it.
+    stub_getaddresses("bad.example" => %w[169.254.169.254]) do
+      assert_nil Surfguard.resolve_public_ip("https://bad.example")
+    end
+  end
+
+  def test_resolve_public_ips_raises_unresolvable_when_nothing_resolves
+    stub_getaddresses({}) do
+      assert_raises(Surfguard::Unresolvable) do
+        Surfguard.resolve_public_ips("nope.example")
+      end
+    end
+  end
+
+  def test_resolve_public_ips_returns_empty_when_resolved_but_all_blocked
+    stub_getaddresses("bad.example" => %w[10.0.0.1 169.254.169.254]) do
+      assert_empty Surfguard.resolve_public_ips("bad.example")
+    end
+  end
+
+  def test_enforce_raises_unresolvable_rather_than_violation
+    stub_getaddresses({}) do
+      assert_raises(Surfguard::Unresolvable) do
+        Surfguard.enforce_public_ip("https://nope.example")
+      end
+    end
+  end
+
+  def test_enforce_raises_violation_on_malformed_url
+    assert_raises(Surfguard::Violation) do
+      Surfguard.enforce_public_ip("http://")
+    end
+  end
+
+  def test_resolver_errors_resolve_to_nothing
+    # Resolv.getaddresses runs in the method body, not inside another rescue
+    # clause, so the ResolvError rescue actually covers it.
+    original = Resolv.method(:getaddresses)
+    Resolv.define_singleton_method(:getaddresses) { |_host| raise Resolv::ResolvError }
+    assert_raises(Surfguard::Unresolvable) do
+      Surfguard.resolve_public_ips("boom.example")
+    end
+  ensure
+    Resolv.define_singleton_method(:getaddresses, original)
+  end
 end

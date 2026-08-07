@@ -20,7 +20,7 @@ Surfguard.resolve_public_ips("feeds.example.com")
 
 # Non-pinning caller (hands the hostname straight to Net::HTTP, which resolves again):
 Surfguard.resolvable_public_ip?("https://feeds.example.com/atom")  # => true only if EVERY address is public
-Surfguard.enforce_public_ip(url)                                   # raises Surfguard::Violation otherwise
+Surfguard.enforce_public_ip(url)                                   # raises otherwise
 
 # Single-address compatibility shim:
 Surfguard.resolve_public_ip(url)   # => "93.184.216.34" or nil
@@ -28,6 +28,25 @@ Surfguard.resolve_public_ip(url)   # => "93.184.216.34" or nil
 # The classification core, if you already hold an address:
 Surfguard.blocked_address?(IPAddr.new("169.254.169.254"))  # => true
 ```
+
+## Refused vs. unresolvable
+
+"We refuse that address" and "the host didn't answer" are different answers, and
+collapsing them bites callers that treat a refusal as permanent. A webhook that
+deactivates a customer's endpoint on `Violation` would retire it on one bad DNS
+minute if a failed lookup arrived the same way.
+
+| | resolves to something public | resolves, all blocked | resolves to nothing | malformed URL |
+|---|---|---|---|---|
+| `resolve_public_ips` (takes a host) | the public addresses | `[]` | raises `Unresolvable` | — |
+| `resolve_public_ip` | first public address | `nil` | raises `Unresolvable` | `nil` |
+| `enforce_public_ip` | returns | raises `Violation` | raises `Unresolvable` | raises `Violation` |
+| `resolvable_public_ip?` | `true` | `false` | `false` | `false` |
+
+`Unresolvable` is **not** a subclass of `Violation` — that's the whole point.
+Rescue both where you don't care which it was. Note the predicate answers the
+question it was asked and never raises; use `enforce_public_ip` or
+`resolve_public_ip` when you need to tell the cases apart.
 
 ## The policy
 

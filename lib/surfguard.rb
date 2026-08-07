@@ -39,6 +39,14 @@ require_relative "surfguard/version"
 module Surfguard
   class Violation < StandardError; end
 
+  # The host answered with no address at all. Deliberately NOT a Violation:
+  # nothing was refused here, the lookup simply came back empty, which is
+  # usually a transient upstream failure. A caller that gives up permanently on
+  # a Violation -- a webhook deactivating a customer's endpoint, say -- must not
+  # give up the same way on this, or one bad DNS minute retires the endpoint for
+  # good. Callers that don't care can rescue both.
+  class Unresolvable < StandardError; end
+
   extend self
 
   # IPv4 special-use ranges that must never be a fetch target (RFC 5735/6890,
@@ -102,20 +110,27 @@ module Surfguard
 
   # Every PUBLIC address the host resolves to, IPv4 ahead of IPv6, DNS order
   # preserved within each family so a provider's round-robin still spreads load.
-  # Empty when nothing usable resolves — the caller's signal to refuse. A caller
-  # that fails over MUST iterate this list and pin each address; resolving again
-  # reopens the rebinding window. Accepts a hostname or an IP-literal host.
+  # Empty when the host resolves but every address is blocked; raises
+  # Unresolvable when it resolves to nothing at all, so the caller can tell a
+  # refusal from a lookup failure. A caller that fails over MUST iterate this
+  # list and pin each address; resolving again reopens the rebinding window.
+  # Accepts a hostname or an IP-literal host.
   def resolve_public_ips(host)
-    resolve(host).reject { |ip| blocked_address?(ip) }
-                 .partition(&:ipv4?)
-                 .flatten
-                 .map(&:to_s)
+    addresses = resolve(host)
+    raise Unresolvable, "No address for #{host}" if addresses.empty?
+
+    addresses.reject { |ip| blocked_address?(ip) }
+             .partition(&:ipv4?)
+             .flatten
+             .map(&:to_s)
   end
 
   # True only if the URL's host resolves to at least one address and NONE are
   # blocked. For non-pinning callers (they hand the hostname straight to
   # Net::HTTP, which resolves again), so anything short of "every address is
-  # public" is unsafe. Returns false on an unresolvable or malformed host.
+  # public" is unsafe. A predicate answers the question it was asked and doesn't
+  # raise: false covers unresolvable and malformed alike. Reach for
+  # .enforce_public_ip or .resolve_public_ip when you need to tell those apart.
   def resolvable_public_ip?(url)
     addresses = resolve(host_of(url))
     addresses.any? && addresses.none? { |ip| blocked_address?(ip) }
@@ -123,19 +138,29 @@ module Surfguard
     false
   end
 
-  # Raise Surfguard::Violation unless the URL's host is safe (see
-  # .resolvable_public_ip?). For call sites that want a hard stop, not a boolean.
+  # Raise unless the URL's host is safe, for call sites that want a hard stop
+  # rather than a boolean: Unresolvable when it answers with nothing, Violation
+  # when it answers with something we refuse. A malformed URL is a Violation --
+  # there was never a lookup to fail.
   def enforce_public_ip(url)
-    raise Violation, "Refusing to fetch private/internal address for #{url}" unless resolvable_public_ip?(url)
+    addresses = resolve(host_of(url))
+    raise Unresolvable, "No address for #{url}" if addresses.empty?
+    raise Violation, "Refusing to fetch private/internal address for #{url}" if addresses.any? { |ip| blocked_address?(ip) }
+  rescue URI::InvalidURIError, IPAddr::InvalidAddressError, ArgumentError
+    raise Violation, "Refusing to fetch malformed address for #{url}"
   end
 
   # The single-address compatibility shim for callers migrating from an older
-  # first-address-only guard. Returns the first public address as a String, or nil
-  # if the host is unresolvable, malformed, or resolves to anything blocked. Prefer
-  # .resolve_public_ips for new code.
+  # first-address-only guard. Returns the first public address as a String, nil
+  # if the host is malformed or resolves to anything blocked, and raises
+  # Unresolvable if it resolves to nothing -- which is where an older guard
+  # built on Resolv.getaddress raised Resolv::ResolvError, so callers that
+  # distinguished a lookup failure keep doing so. Prefer .resolve_public_ips.
   def resolve_public_ip(url)
     addresses = resolve(host_of(url))
-    return nil if addresses.empty? || addresses.any? { |ip| blocked_address?(ip) }
+    raise Unresolvable, "No address for #{url}" if addresses.empty?
+    return nil if addresses.any? { |ip| blocked_address?(ip) }
+
     addresses.first.to_s
   rescue URI::InvalidURIError, IPAddr::InvalidAddressError, ArgumentError
     nil
@@ -171,16 +196,33 @@ module Surfguard
   # Resolv.getaddresses — the Hosts+DNS chain, matching what the connection layer
   # will use, and returning every address. Returns [IPAddr].
   def resolve(host)
-    [ IPAddr.new(host) ]
-  rescue IPAddr::InvalidAddressError
-    Resolv.getaddresses(host).map { |a| IPAddr.new(a) }
+    literal = ip_literal(host)
+
+    if literal
+      [ literal ]
+    else
+      Resolv.getaddresses(host).map { |a| IPAddr.new(a) }
+    end
   rescue Resolv::ResolvError, Resolv::ResolvTimeout
     []
   end
 
+  # nil for anything that isn't already an address. Kept separate so the DNS
+  # call above sits in the method body, where the ResolvError rescue can reach
+  # it — inside a sibling rescue clause it could not.
+  def ip_literal(host)
+    IPAddr.new(host)
+  rescue IPAddr::InvalidAddressError
+    nil
+  end
+
   def host_of(url)
-    # URI#host keeps IPv6 brackets ([::1]); IPAddr.new does not want them.
-    host = URI.parse(url).host or raise URI::InvalidURIError, "no host in #{url.inspect}"
+    # URI#host is "" for "http://" and nil when there's no authority at all.
+    # Neither is a name to look up, so both are malformed rather than a lookup
+    # that failed. URI#host keeps IPv6 brackets ([::1]); IPAddr.new won't take them.
+    host = URI.parse(url).host
+    raise URI::InvalidURIError, "no host in #{url.inspect}" if host.nil? || host.empty?
+
     host.delete_prefix("[").delete_suffix("]")
   end
 
