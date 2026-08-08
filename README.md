@@ -90,6 +90,11 @@ ruby -Ilib test/surfguard_test.rb
 # 55 runs, 59 assertions — the full BLOCKED/ALLOWED matrix, checked as execution.
 ```
 
+## Security
+
+Surfguard is a security control, so classification bugs are vulnerabilities. Report them privately
+via [SECURITY.md](SECURITY.md) — not the public issue tracker.
+
 ## Status
 
 `0.1.0` — extracted and consolidated from several in-house SSRF guards, tested against the full
