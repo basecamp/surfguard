@@ -93,7 +93,8 @@ ruby -Ilib test/surfguard_test.rb
 ## Security
 
 Surfguard is a security control, so classification bugs are vulnerabilities. Report them privately
-via [SECURITY.md](SECURITY.md) — not the public issue tracker.
+per the [security policy](https://github.com/basecamp/surfguard/security/policy) — not the public
+issue tracker.
 
 ## Status
 
