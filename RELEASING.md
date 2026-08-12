@@ -15,11 +15,13 @@ test -> build -> publish -> confirm -> attest -> github-release
   re-downloads the artifact and asserts that digest before acting.
 - **publish** — the only job that can mint RubyGems credentials, gated by the
   `release-rubygems` environment (required reviewer: Jeremy) and OIDC trusted
-  publishing. No checkout. Before pushing it reconciles with the registry via
-  `script/release/registry_check.rb` — a total state machine: version absent →
-  push; already published with exactly our bytes → skip (idempotent re-run);
-  anything else → fail closed. Credentials are scrubbed unconditionally
-  (`if: always()`), even when the push fails.
+  publishing. No checkout and no artifact-delivered executable code: only the
+  `.gem` enters this job. Before pushing it reconciles with the registry using
+  workflow-owned `curl`/`jq` — a total state machine: version absent → push;
+  already published with exactly our bytes → skip (idempotent re-run);
+  anything else → fail closed. It verifies the gem digest again immediately
+  before `gem push`. Credentials are scrubbed unconditionally (`if: always()`),
+  even when the push fails.
 - **confirm** — deliberately credential-free (`permissions: {}`): polls the
   registry until it reports exactly our version with exactly our digest, then
   downloads the canonical bytes from RubyGems and asserts their digest equals
@@ -35,8 +37,8 @@ Rehearse before every first-of-its-kind release.
 
 ## Cutting a release
 
-1. For a version bump (not needed for v0.1.0, which ships the current
-   version): `rake "bump[X.Y.Z]"` on a branch, review, PR, merge. `bump`
+1. For a version bump: `rake "bump[X.Y.Z]"` on a clean branch, review, PR,
+   merge. `bump`
    rewrites `lib/surfguard/version.rb` and refreshes `Gemfile.lock`; it
    commits nothing itself.
 2. **First release only:** verify/create the RubyGems pending trusted
@@ -115,8 +117,10 @@ Repository-level controls **cannot defend against malicious repository
 administrators**: admins can edit the controls themselves. With 19 effective
 admins on this repo, that residual exposure is real. The setup below narrows
 *routine* release authority to Jeremy; it does not and cannot make admins
-powerless. Mitigations are organizational: reduce admin membership on this
-repo and/or impose independently managed org-level governance (org rulesets).
+powerless. Before announcing Surfguard as a public security control, re-audit
+effective admin membership, reduce it, and/or impose independently managed
+org-level governance (org rulesets). That risk cannot be eliminated by another
+repository-owned workflow or ruleset.
 
 ## One-time setup
 

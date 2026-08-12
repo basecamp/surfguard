@@ -23,8 +23,13 @@ Anything that lets a blocked address through, for example:
 - An address in a blocked range that Surfguard classifies as public.
 - A resolution path (encoding, embedding, transition mechanism) that reaches a blocked address
   despite validation.
-- A discrepancy between what Surfguard validates and what a caller following the documented
-  pinning contract would connect to.
+- A parser or resolver discrepancy that lets a caller following a documented API contract connect
+  to a different address than Surfguard classified.
+
+Surfguard does not perform the fetch itself. Scheme restrictions, redirect handling, connection
+pinning, custom DNS64 prefixes, and nonstandard NSS sources have caller or deployment requirements
+documented in the README. Those boundaries by themselves are not classification bugs, but a bypass
+when the documented contract is followed qualifies.
 
 Non-security bugs and questions belong in the
 [regular issue tracker](https://github.com/basecamp/surfguard/issues).
