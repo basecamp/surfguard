@@ -31,6 +31,6 @@ Gem::Specification.new do |spec|
   spec.files = Dir["lib/**/*.rb", "README.md", "LICENSE", "SECURITY.md"]
   spec.require_paths = [ "lib" ]
 
-  # Standard library only: ipaddr, resolv, uri. No runtime dependencies on
+  # Standard library only: ipaddr, resolv, socket, uri. No runtime dependencies on
   # purpose — this must drop into apps on wildly different gem sets.
 end

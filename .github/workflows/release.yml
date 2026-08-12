@@ -115,19 +115,21 @@ jobs:
           name: rubygem
           path: surfguard-${{ steps.version.outputs.version }}.gem
           if-no-files-found: error
-      # The publish/confirm jobs run these scripts but never check out the
-      # repo; the scripts travel by artifact from this (trusted, unprivileged)
-      # checkout instead.
+      # The unprivileged confirm job runs these scripts without checking out
+      # the repo. The OIDC-capable publish job deliberately does not download
+      # or execute them.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-scripts
-          path: script/release/*.rb
+          path: |
+            script/release/registry.rb
+            script/release/registry_confirm.rb
           if-no-files-found: error
 
   # The only job that can mint RubyGems credentials. Gated by the
   # release-rubygems environment (required reviewer + OIDC trusted publishing).
-  # No checkout: nothing repo-controlled executes here except the reviewed,
-  # artifact-delivered release scripts.
+  # No checkout and no build-produced executable code: only the .gem artifact
+  # enters this job. Registry reconciliation is workflow-owned shell below.
   publish:
     name: Publish to RubyGems
     if: github.event_name == 'push'
@@ -140,13 +142,25 @@ jobs:
       VERSION: ${{ needs.build.outputs.version }}
       GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
     steps:
+      - name: Validate unprivileged build outputs against the release ref
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[A-Za-z0-9]+)*$ ]]; then
+            echo "::error::Build output is not a plausible gem version"
+            exit 1
+          fi
+          if [ "v${VERSION}" != "$REF_NAME" ]; then
+            echo "::error::Build output version ${VERSION} does not match release ref ${REF_NAME}"
+            exit 1
+          fi
+          if [[ ! "$GEM_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Build output is not a lowercase SHA-256 digest"
+            exit 1
+          fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rubygem
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-scripts
-          path: script/release
       - name: Verify artifact identity (digest must match the build job's)
         run: |
           actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
@@ -154,24 +168,96 @@ jobs:
             echo "::error::Artifact digest ${actual} does not match build output ${GEM_SHA256}"
             exit 1
           fi
+      - name: Reconcile with the registry (total state machine; fails closed)
+        id: reconcile
+        run: |
+          registry_url="https://rubygems.org/api/v2/rubygems/surfguard/versions/${VERSION}.json"
+          response_body="$(mktemp)"
+          trap 'rm -f "$response_body"' EXIT
+
+          attempt=1
+          while [ "$attempt" -le 5 ]; do
+            : > "$response_body"
+            status=""
+            retry_reason=""
+
+            if status="$(curl --disable --silent --show-error \
+              --connect-timeout 10 \
+              --max-time 40 \
+              --proto '=https' \
+              --output "$response_body" \
+              --write-out '%{http_code}' \
+              "$registry_url")"; then
+              case "$status" in
+                200)
+                  if ! published_version="$(jq --exit-status --raw-output \
+                    '.number | select(type == "string")' "$response_body")"; then
+                    echo "::error::RubyGems returned malformed version metadata"
+                    exit 1
+                  fi
+                  if ! published_sha="$(jq --exit-status --raw-output \
+                    '.sha | strings | select(test("^[0-9A-Fa-f]{64}$")) | ascii_downcase' \
+                    "$response_body")"; then
+                    echo "::error::RubyGems returned malformed digest metadata"
+                    exit 1
+                  fi
+                  if [ "$published_version" != "$VERSION" ]; then
+                    echo "::error::RubyGems returned metadata for a different version; expected ${VERSION}"
+                    exit 1
+                  fi
+                  if [ "$published_sha" != "$GEM_SHA256" ]; then
+                    echo "::error::surfguard ${VERSION} is already published with sha256 ${published_sha}; our artifact is ${GEM_SHA256}"
+                    exit 1
+                  fi
+                  decision="skip"
+                  break
+                  ;;
+                404)
+                  decision="push"
+                  break
+                  ;;
+                429|5??)
+                  retry_reason="HTTP ${status}"
+                  ;;
+                *)
+                  echo "::error::Unexpected HTTP ${status} from ${registry_url}"
+                  exit 1
+                  ;;
+              esac
+            else
+              retry_reason="network failure"
+            fi
+
+            if [ "$attempt" -ge 5 ]; then
+              echo "::error::RubyGems unavailable after ${attempt} attempts (${retry_reason})"
+              exit 1
+            fi
+            sleep "$((2 * attempt))"
+            attempt="$((attempt + 1))"
+          done
+
+          echo "decision=${decision}" >> "$GITHUB_OUTPUT"
+          echo "registry decision: ${decision}"
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        if: steps.reconcile.outputs.decision == 'push'
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
       - name: Pin the packaging toolchain (same pins as build)
+        if: steps.reconcile.outputs.decision == 'push'
         run: gem update --system "$RUBYGEMS_VERSION"
-      - name: Reconcile with the registry (total state machine; fails closed)
-        id: reconcile
-        run: |
-          decision="$(ruby script/release/registry_check.rb surfguard "$VERSION" "$GEM_SHA256")"
-          echo "decision=${decision}" >> "$GITHUB_OUTPUT"
-          echo "registry decision: ${decision}"
       - name: Configure RubyGems trusted-publishing credentials (OIDC)
         if: steps.reconcile.outputs.decision == 'push'
         uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
-      - name: Push the gem
+      - name: Re-verify artifact identity and push the gem
         if: steps.reconcile.outputs.decision == 'push'
-        run: gem push "surfguard-${VERSION}.gem"
+        run: |
+          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
+          if [ "$actual" != "$GEM_SHA256" ]; then
+            echo "::error::Artifact digest ${actual} changed after reconciliation; expected ${GEM_SHA256}"
+            exit 1
+          fi
+          gem push "surfguard-${VERSION}.gem"
       - name: Scrub credentials (runs even when the push fails)
         if: always()
         run: |

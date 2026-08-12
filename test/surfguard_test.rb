@@ -33,8 +33,18 @@ class SurfguardTest < Minitest::Test
     "IPv6 site-local (deprecated)"       => "fec0::1",
     "IPv6 multicast"                     => "ff02::1",
     "IPv6 discard-only"                  => "100::1",
+    "IPv6 dummy destination"             => "100:0:0:1::1",
     "IPv6 Teredo"                        => "2001:0:a9fe:a9fe::",
+    "IPv6 PCP anycast"                   => "2001:1::1",
+    "IPv6 TURN anycast"                  => "2001:1::2",
+    "IPv6 DNS-SD SRP anycast"            => "2001:1::3",
+    "IPv6 unallocated IETF assignment"   => "2001:1::4",
+    "IPv6 deprecated ORCHID"             => "2001:10::1",
+    "IPv6 ORCHIDv2"                      => "2001:20::1",
+    "IPv6 DET overlay identifier"        => "2001:30::1",
     "IPv6 documentation"                 => "2001:db8::1",
+    "IPv6 expanded documentation"        => "3fff::1",
+    "IPv6 SRv6 SID"                      => "5f00::1",
     # IPv4-in-IPv6 encapsulations
     "IPv4-mapped link-local"             => "::ffff:169.254.169.254",
     "IPv4-compatible link-local"         => "::169.254.169.254",
@@ -54,9 +64,34 @@ class SurfguardTest < Minitest::Test
     "octet above link-local"               => "169.255.0.0",
     "below carrier-grade NAT"              => "100.63.255.255",
     "above carrier-grade NAT"              => "100.128.0.0",
+    "AMT service"                           => "2001:3::1",
+    "AS112 service"                         => "2001:4:112::1",
+    "direct AS112 service"                  => "2620:4f:8000::1",
     "NAT64 WKP wrapping a public IPv4"     => "64:ff9b::5db8:d822", # 93.184.216.34
     "SIIT wrapping a public IPv4"          => "::ffff:0:5db8:d822"
   }.freeze
+
+  LEGACY_NUMERIC_BLOCKED = {
+    "single-integer loopback"     => "2130706433",
+    "short loopback"              => "127.1",
+    "hex loopback"                => "0x7f000001",
+    "octal dotted loopback"       => "0177.0.0.1",
+    "single zero"                 => "0",
+    "octal zero"                  => "00",
+    "hex zero"                    => "0x0",
+    "single-integer link-local"   => "2852039166",
+    "hex link-local"              => "0xa9fea9fe"
+  }.freeze
+
+  NON_HOST_PREFIXES = %w[
+    0.0.0.0/0
+    ::/0
+    ::1/127
+    127.0.0.1/0
+    ::1/64
+    169.254.169.254/8
+    10.0.0.1/6
+  ].freeze
 
   BLOCKED.each do |label, address|
     define_method("test_blocks_#{label.gsub(/\W+/, '_')}") do
@@ -77,12 +112,40 @@ class SurfguardTest < Minitest::Test
     refute Surfguard::NAT64_LOCAL_USE.include?(IPAddr.new("64:ff9b::1"))
   end
 
+  def test_expanded_documentation_prefix_boundaries
+    assert Surfguard.blocked_address?("3fff::")
+    assert Surfguard.blocked_address?("3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff")
+    refute Surfguard.blocked_address?("3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+    refute Surfguard.blocked_address?("3fff:1000::")
+  end
+
+  def test_globally_reachable_ietf_assignment_carve_outs_are_narrow
+    assert Surfguard.blocked_address?("2001:1::4")
+    assert Surfguard.blocked_address?("2001:2:ffff:ffff:ffff:ffff:ffff:ffff")
+    refute Surfguard.blocked_address?("2001:3:ffff:ffff:ffff:ffff:ffff:ffff")
+    assert Surfguard.blocked_address?("2001:4:111:ffff:ffff:ffff:ffff:ffff")
+    refute Surfguard.blocked_address?("2001:4:112:ffff:ffff:ffff:ffff:ffff")
+    assert Surfguard.blocked_address?("2001:4:113::")
+  end
+
   def test_siit_and_mapped_prefixes_do_not_overlap
     refute Surfguard::IPV4_TRANSLATABLE.include?(IPAddr.new("::ffff:169.254.169.254"))
   end
 
   def test_blocks_an_unparseable_address
     assert Surfguard.blocked_address?("not-an-ip")
+  end
+
+  NON_HOST_PREFIXES.each do |address|
+    define_method("test_blocks_non_host_prefix_#{address.gsub(/\W+/, '_')}") do
+      assert Surfguard.blocked_address?(address)
+      assert Surfguard.blocked_address?(IPAddr.new(address))
+    end
+  end
+
+  def test_allows_full_width_host_prefixes
+    refute Surfguard.blocked_address?("93.184.216.34/32")
+    refute Surfguard.blocked_address?("2606:2800:220:1:248:1893:25c8:1946/128")
   end
 
   # --- resolution (stub the resolver; never hit the network) ------------------
@@ -135,6 +198,84 @@ class SurfguardTest < Minitest::Test
     # No stub: an internal literal is caught without any resolver call.
     refute Surfguard.resolvable_public_ip?("http://169.254.169.254/latest/meta-data/")
     assert Surfguard.resolvable_public_ip?("http://93.184.216.34/")
+  end
+
+  LEGACY_NUMERIC_BLOCKED.each do |label, host|
+    define_method("test_legacy_numeric_#{label.gsub(/\W+/, '_')}_skips_dns_and_is_refused") do
+      original = Resolv.method(:getaddresses)
+      dns_queries = []
+      Resolv.define_singleton_method(:getaddresses) do |resolved_host|
+        dns_queries << resolved_host
+        [ "93.184.216.34" ] # Model a public wildcard/search-domain answer.
+      end
+
+      assert_empty Surfguard.resolve_public_ips(host)
+      refute Surfguard.resolvable_public_ip?("http://#{host}/")
+      assert_raises(Surfguard::Violation) do
+        Surfguard.enforce_public_ip("http://#{host}/")
+      end
+      assert_empty dns_queries
+    ensure
+      Resolv.define_singleton_method(:getaddresses, original)
+    end
+  end
+
+  def test_legacy_numeric_public_address_is_classified_and_skips_dns
+    original = Resolv.method(:getaddresses)
+    dns_queries = []
+    Resolv.define_singleton_method(:getaddresses) do |host|
+      dns_queries << host
+      [ "169.254.169.254" ]
+    end
+
+    assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips("1572395042")
+    assert Surfguard.resolvable_public_ip?("http://1572395042/")
+    assert_empty dns_queries
+  ensure
+    Resolv.define_singleton_method(:getaddresses, original)
+  end
+
+  def test_numeric_parser_fault_cannot_send_numeric_looking_tokens_to_dns
+    original_getaddrinfo = Socket.method(:getaddrinfo)
+    original_getaddresses = Resolv.method(:getaddresses)
+    dns_queries = []
+    Socket.define_singleton_method(:getaddrinfo) { |*| raise SocketError, "simulated parser fault" }
+    Resolv.define_singleton_method(:getaddresses) do |host|
+      dns_queries << host
+      [ "93.184.216.34" ]
+    end
+
+    LEGACY_NUMERIC_BLOCKED.each_value do |host|
+      assert_empty Surfguard.resolve_public_ips(host)
+    end
+    assert_empty Surfguard.resolve_public_ips("not:a:valid:ipv6")
+    assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips("example.com")
+    assert_equal [ "example.com" ], dns_queries
+  ensure
+    Socket.define_singleton_method(:getaddrinfo, original_getaddrinfo)
+    Resolv.define_singleton_method(:getaddresses, original_getaddresses)
+  end
+
+  def test_non_host_prefixes_are_rejected_without_dns
+    original = Resolv.method(:getaddresses)
+    dns_queries = []
+    Resolv.define_singleton_method(:getaddresses) do |host|
+      dns_queries << host
+      [ "93.184.216.34" ]
+    end
+
+    NON_HOST_PREFIXES.each do |host|
+      assert_empty Surfguard.resolve_public_ips(host)
+    end
+    assert_empty dns_queries
+  ensure
+    Resolv.define_singleton_method(:getaddresses, original)
+  end
+
+  def test_full_width_host_prefixes_remain_valid_literals
+    assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips("93.184.216.34/32")
+    assert_equal [ "2606:2800:220:1:248:1893:25c8:1946" ],
+      Surfguard.resolve_public_ips("2606:2800:220:1:248:1893:25c8:1946/128")
   end
 
   def test_bracketed_ipv6_literal_host
