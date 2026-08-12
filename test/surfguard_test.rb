@@ -17,6 +17,7 @@ class SurfguardTest < Minitest::Test
     "private 192.168/16"                 => "192.168.1.1",
     "carrier-grade NAT"                  => "100.64.0.1",
     "this network"                       => "0.0.0.0",
+    "Azure wire server"                  => "168.63.129.16",
     "IETF protocol assignments"          => "192.0.0.1",
     "6to4 relay anycast"                 => "192.88.99.1",
     "benchmarking"                       => "198.18.0.1",
@@ -119,6 +120,12 @@ class SurfguardTest < Minitest::Test
     refute Surfguard.blocked_address?("3fff:1000::")
   end
 
+  def test_azure_wire_server_deny_is_one_exact_address
+    refute Surfguard.blocked_address?("168.63.129.15")
+    assert Surfguard.blocked_address?("168.63.129.16")
+    refute Surfguard.blocked_address?("168.63.129.17")
+  end
+
   def test_globally_reachable_ietf_assignment_carve_outs_are_narrow
     assert Surfguard.blocked_address?("2001:1::4")
     assert Surfguard.blocked_address?("2001:2:ffff:ffff:ffff:ffff:ffff:ffff")
@@ -198,6 +205,28 @@ class SurfguardTest < Minitest::Test
     # No stub: an internal literal is caught without any resolver call.
     refute Surfguard.resolvable_public_ip?("http://169.254.169.254/latest/meta-data/")
     assert Surfguard.resolvable_public_ip?("http://93.184.216.34/")
+  end
+
+  def test_azure_wire_server_literal_is_refused_by_every_resolution_api
+    url = "http://168.63.129.16/machine/?comp=goalstate"
+
+    assert_empty Surfguard.resolve_public_ips("168.63.129.16")
+    assert_nil Surfguard.resolve_public_ip(url)
+    refute Surfguard.resolvable_public_ip?(url)
+    assert_raises(Surfguard::Violation) do
+      Surfguard.enforce_public_ip(url)
+    end
+  end
+
+  def test_azure_wire_server_in_a_dns_answer_is_filtered_and_refused_unpinned
+    stub_getaddresses("azure.example" => %w[93.184.216.34 168.63.129.16]) do
+      assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips("azure.example")
+      assert_nil Surfguard.resolve_public_ip("https://azure.example")
+      refute Surfguard.resolvable_public_ip?("https://azure.example")
+      assert_raises(Surfguard::Violation) do
+        Surfguard.enforce_public_ip("https://azure.example")
+      end
+    end
   end
 
   LEGACY_NUMERIC_BLOCKED.each do |label, host|
