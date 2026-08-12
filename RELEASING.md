@@ -124,12 +124,17 @@ Idempotent payloads, each **read back** to assert the declared invariant.
 Replace IDs where noted.
 
 1. **Workflow token defaults** — read-only token, bot approvals enabled
-   (required for zero-touch Dependabot automation):
+   (required for zero-touch Dependabot automation), and the repository's
+   auto-merge setting (independent of token permissions; `gh pr merge --auto`
+   fails without it):
 
    ```sh
    gh api -X PUT repos/basecamp/surfguard/actions/permissions/workflow \
      -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
    gh api repos/basecamp/surfguard/actions/permissions/workflow
+
+   gh api -X PATCH repos/basecamp/surfguard -F allow_auto_merge=true
+   gh api repos/basecamp/surfguard --jq .allow_auto_merge
    ```
 
 2. **Release actor** — a dedicated one-member team
