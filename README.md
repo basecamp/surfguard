@@ -1,11 +1,28 @@
 # Surfguard
 
+[![CI](https://github.com/basecamp/surfguard/actions/workflows/ci.yml/badge.svg)](https://github.com/basecamp/surfguard/actions/workflows/ci.yml)
+
 One SSRF address policy for Ruby apps that fetch a URL someone else supplied.
 
 It consolidates several drifting in-house copies of this policy into one — copies that had grown
 four different ideas of what "internal" means, including one that decoded a NAT64 prefix whose length
 is not recoverable from the address. This gem is their union, decided once and tested against the
 full IPv4 × IPv6 range matrix.
+
+## Installation
+
+Not yet published to RubyGems — `v0.1.0` will be the first packaged release. Until it ships,
+install from source:
+
+```ruby
+gem "surfguard", github: "basecamp/surfguard"
+```
+
+Once `v0.1.0` is published:
+
+```ruby
+gem "surfguard"
+```
 
 ## What it does
 
@@ -87,7 +104,7 @@ deploy setting as if it narrowed Surfguard's input.
 
 ```bash
 ruby -Ilib test/surfguard_test.rb
-# 55 runs, 59 assertions — the full BLOCKED/ALLOWED matrix, checked as execution.
+# The full BLOCKED/ALLOWED matrix, checked as execution. Bare Ruby, no gems needed.
 ```
 
 ## Security
@@ -98,5 +115,6 @@ issue tracker.
 
 ## Status
 
-`0.1.0` — extracted and consolidated from several in-house SSRF guards, tested against the full
-IPv4 × IPv6 special-use matrix. Resolve-and-classify only; callers pin.
+Extracted and consolidated from several in-house SSRF guards, tested against the full
+IPv4 × IPv6 special-use matrix. Resolve-and-classify only; callers pin. See the
+[releases page](https://github.com/basecamp/surfguard/releases) for versions and changes.

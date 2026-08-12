@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: bundler
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    groups:
+      bundler:
+        patterns: [ "*" ]
+    commit-message:
+      prefix: "deps"
+    labels: [ dependencies ]
+    cooldown:
+      default-days: 10
+      semver-major-days: 7
+      semver-minor-days: 3
+      semver-patch-days: 2
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    groups:
+      github-actions:
+        patterns: [ "*" ]
+    commit-message:
+      prefix: "deps(actions)"
+    labels: [ dependencies, github-actions ]
+    # github-actions supports only default-days (no semver-granular cooldown).
+    cooldown:
+      default-days: 10
