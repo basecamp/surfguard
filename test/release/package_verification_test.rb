@@ -39,6 +39,7 @@ class PackageVerificationTest < Minitest::Test
       assert_equal env["GEM_HOME"], env["GEM_PATH"]
       assert_nil env["RUBYOPT"]
       assert_nil env["RUBYLIB"]
+      assert_nil env["RUBYGEMS_GEMDEPS"]
       true
     }
 

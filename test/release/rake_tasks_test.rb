@@ -40,10 +40,12 @@ class RakeTasksTest < Minitest::Test
   # --- bump guards ------------------------------------------------------------
 
   def test_bump_rejects_a_malformed_version_with_zero_writes
-    status, output = run_rake("bump[banana]")
-    refute_predicate status, :success?
-    assert_match(/must be exact semver/, output)
-    assert_untouched
+    [ "banana", "01.2.3", "1.02.3", "1.2", "1.2.3.4" ].each do |version|
+      status, output = run_rake("bump[#{version}]")
+      refute_predicate status, :success?, version
+      assert_match(/must be exact semver/, output)
+      assert_untouched
+    end
   end
 
   def test_bump_rejects_a_dirty_tree_with_zero_writes

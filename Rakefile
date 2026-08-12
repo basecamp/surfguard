@@ -31,7 +31,10 @@ end
 desc "Rewrite version.rb to VERSION (exact semver, strictly greater) and refresh Gemfile.lock; commits nothing"
 task :bump, [ :version ] do |_t, args|
   version = args[:version].to_s
-  abort "bump: version must be exact semver X.Y.Z (got #{version.inspect})" unless version.match?(/\A\d+\.\d+\.\d+\z/)
+  # Exact SemVer: numeric identifiers may not have leading zeros.
+  unless version.match?(/\A(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\z/)
+    abort "bump: version must be exact semver X.Y.Z (got #{version.inspect})"
+  end
   abort "bump: working tree must be clean" unless clean_tree?
 
   current = surfguard_version

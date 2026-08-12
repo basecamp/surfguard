@@ -95,10 +95,20 @@ jobs:
       - name: Read the toolchain pins from the tagged source
         id: pins
         run: |
+          # No YAML library needed before setup-ruby: the tagged release.yml
+          # is our own file with exactly this shape, so anchored sed suffices
+          # — and the extracted values are validated before use.
+          ruby_version="$(sed -n 's/^  RUBY_VERSION: "\([0-9][0-9.]*\)"$/\1/p' tagged-src/.github/workflows/release.yml | head -1)"
+          rubygems_version="$(sed -n 's/^  RUBYGEMS_VERSION: "\([0-9][0-9.]*\)"$/\1/p' tagged-src/.github/workflows/release.yml | head -1)"
+          if [ -z "$ruby_version" ] || [ -z "$rubygems_version" ]; then
+            echo "::error::Could not read RUBY_VERSION/RUBYGEMS_VERSION pins from the tagged release.yml"
+            exit 1
+          fi
           {
-            echo "ruby=$(python3 -c 'import yaml; print(yaml.safe_load(open("tagged-src/.github/workflows/release.yml"))["env"]["RUBY_VERSION"])')"
-            echo "rubygems=$(python3 -c 'import yaml; print(yaml.safe_load(open("tagged-src/.github/workflows/release.yml"))["env"]["RUBYGEMS_VERSION"])')"
+            echo "ruby=${ruby_version}"
+            echo "rubygems=${rubygems_version}"
           } >> "$GITHUB_OUTPUT"
+          echo "tagged toolchain pins: ruby ${ruby_version}, rubygems ${rubygems_version}"
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: ${{ steps.pins.outputs.ruby }}

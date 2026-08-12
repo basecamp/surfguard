@@ -20,7 +20,7 @@ module Surfguard
       # `require "surfguard"` resolve from the checkout instead of the
       # installed gem and wave a broken package through.
       CLEAN_ENV = {
-        "RUBYOPT" => nil, "RUBYLIB" => nil,
+        "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
         "BUNDLE_GEMFILE" => nil, "BUNDLE_PATH" => nil
       }.freeze
 
