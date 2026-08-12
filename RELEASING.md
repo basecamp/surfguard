@@ -49,8 +49,11 @@ Rehearse before every first-of-its-kind release.
 5. Watch the run to completion. Verify afterwards:
    - digest equality across the RubyGems download, the GitHub Release asset,
      and the attestation subject;
-   - `gh attestation verify surfguard-X.Y.Z.gem --signer-workflow basecamp/surfguard/.github/workflows/release.yml` —
-     constrain by signer workflow and source ref, not just `--repo`.
+   - `gh attestation verify surfguard-X.Y.Z.gem --signer-workflow basecamp/surfguard/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` —
+     constrain by signer workflow **and** source ref, not just `--repo`.
+     (A release finished by the recovery workflow is signed by it instead:
+     use `--signer-workflow basecamp/surfguard/.github/workflows/release-recovery.yml`
+     with the same `--source-ref`.)
 6. **First release only:** verify durable ownership on RubyGems — the gem
    sits under the RubyGems `basecamp` organization / the correct owner
    accounts with MFA enforced — before announcing.
@@ -77,10 +80,18 @@ any conflict. Recovery rules, by failure state:
 | Workflow defect embedded in a published tag | Re-runs use the tagged workflow; fixing `main` doesn't fix the tag. Never move/delete the tag. Run `release-recovery.yml` (dispatch with the version) to finish attestation + the GitHub Release from verified canonical registry bytes; ship the workflow fix in the next version. |
 | Bad published release | Never re-point or delete the tag. Ship a new patch version (per SECURITY.md, fixes ship as new releases). Yank only for security-critical cases. |
 
-`release-recovery.yml` never publishes and never mints RubyGems credentials:
-it downloads the canonical `.gem` from RubyGems, verifies it against the
-registry-reported SHA-256, then attests and creates the GitHub Release from
-those verified bytes.
+`release-recovery.yml` never publishes and never mints RubyGems credentials.
+It is gated by the `release-recovery` environment (same reviewer as
+publishing — attestation and Release creation are release authority, not
+general write-collaborator authority) and it refuses to act on anything it
+cannot prove: the `vX.Y.Z` tag must already exist on `main` (so a typo can
+never attest an arbitrary registry version or mint a fresh tag at the
+default-branch tip), and it **rebuilds the gem from the tagged source with
+the tag's own toolchain pins** and requires the rebuilt digest to equal the
+canonical RubyGems digest before attesting. That digest equality is what
+makes the recovery attestation honest: the attested bytes are demonstrably
+the product of the tagged source, not merely whatever the registry served.
+A mismatch stops the workflow for a human.
 
 ## Threat model — an honest limitation
 
@@ -131,6 +142,12 @@ Replace IDs where noted.
    gh api repos/basecamp/surfguard/environments/release-rubygems/deployment-branch-policies
    ```
 
+3a. **Environment `release-recovery`** — same reviewer and
+   `can_admins_bypass: false` as above, with a deployment branch policy of
+   `main` (branch type): the recovery workflow dispatches from `main`, not
+   from a tag. Gates `release-recovery.yml`'s attestation + Release
+   permissions behind the same human as publishing.
+
 4. **Tag rulesets** — two separate rulesets on `refs/tags/v*`, enforcement
    `active`: (a) creation restricted, bypass_actors = the release team only
    (`bypass_mode: always`); (b) update + deletion blocked with **no** bypass
@@ -170,7 +187,11 @@ Replace IDs where noted.
 `dependabot-auto-merge.yml` auto-approves and auto-merges **Bundler
 patch/minor** updates only, via a constrained `pull_request_target` workflow
 that never checks out or executes PR-controlled code. Everything else —
-bundler major, all github-actions updates — is human-gated. CODEOWNERS is
-deliberately scoped (no `*` rule, no `Gemfile.lock` rule) so lockfile-only
-Dependabot PRs don't deadlock on code-owner review; the required `CI` check
-still gates every merge.
+bundler major, all github-actions updates — is human-gated. The approval is
+created through the API pinned to the validated head commit, the merge is
+pinned with `--match-head-commit`, and a human push to a Dependabot PR
+triggers a revoke job that disables any pending auto-merge (the
+dismiss-stale-reviews branch rule retracts the bot approval at the same
+time). CODEOWNERS is deliberately scoped (no `*` rule, no `Gemfile.lock`
+rule) so lockfile-only Dependabot PRs don't deadlock on code-owner review;
+the required `CI` check still gates every merge.

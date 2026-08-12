@@ -217,6 +217,32 @@ class RegistryTest < Minitest::Test
     assert_match(/too many redirects/, error.message)
   end
 
+  def test_verified_download_resolves_relative_redirects_against_the_current_uri
+    registry = scripted(
+      res(200, version_json),
+      res(302, "", location: "/downloads/surfguard-0.1.0.gem"),
+      res(200, BYTES)
+    )
+    assert_equal [ BYTES, DIGEST ], registry.verified_download(VERSION)
+    assert_equal "https://rubygems.org/downloads/surfguard-0.1.0.gem", @requests.last
+  end
+
+  def test_verified_download_resolves_scheme_relative_redirects_as_https
+    registry = scripted(
+      res(200, version_json),
+      res(302, "", location: "//cdn.example/surfguard-0.1.0.gem"),
+      res(200, BYTES)
+    )
+    assert_equal [ BYTES, DIGEST ], registry.verified_download(VERSION)
+    assert_equal "https://cdn.example/surfguard-0.1.0.gem", @requests.last
+  end
+
+  def test_verified_download_rejects_unparseable_redirect_location
+    registry = scripted(res(200, version_json), res(302, "", location: "http://["))
+    error = assert_raises(Registry::Error) { registry.verified_download(VERSION) }
+    assert_match(/unusable redirect location/, error.message)
+  end
+
   def test_verified_download_rejects_redirect_without_location
     registry = scripted(res(200, version_json), res(302, ""))
     assert_raises(Registry::Error) { registry.verified_download(VERSION) }

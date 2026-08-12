@@ -286,8 +286,15 @@ module Surfguard
               raise Error, "too many redirects downloading #{@name}-#{version}.gem" if redirects > MAX_REDIRECTS
               location = response.location
               raise Error, "redirect without a Location header" if location.nil? || location.empty?
-              uri = URI(location)
-              raise Error, "refusing non-https redirect to #{location}" unless uri.is_a?(URI::HTTPS)
+              # Location may legitimately be relative or scheme-relative:
+              # resolve it against the current URI, then enforce https-only.
+              begin
+                target = URI.join(uri.to_s, location)
+              rescue URI::Error => e
+                raise Error, "unusable redirect location #{location.inspect}: #{e.message}"
+              end
+              raise Error, "refusing non-https redirect to #{target}" unless target.is_a?(URI::HTTPS)
+              uri = target
             else
               raise Error, "unexpected HTTP #{response.status} downloading #{uri}"
             end

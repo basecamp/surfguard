@@ -56,6 +56,17 @@ jobs:
       - run: bundle exec rake test
         env:
           COVERAGE: "1"
+      # dependency-review only screens vulnerable/licensed deps — it does not
+      # reject a benign new runtime dependency. Enforce the invariant here so
+      # a spec.add_dependency fails the PR, not the eventual release build.
+      - name: Assert zero runtime dependencies
+        run: |
+          ruby -e '
+            spec = Gem::Specification.load("surfguard.gemspec")
+            deps = spec.runtime_dependencies
+            abort "runtime dependencies are forbidden: #{deps.map(&:name).join(", ")}" unless deps.empty?
+            puts "zero runtime dependencies: ok"
+          '
 
   lint-actions:
     name: actionlint + zizmor

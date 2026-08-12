@@ -102,11 +102,53 @@ jobs:
             || fail "unverified or non-Dependabot commits present"
 
           echo "PR #${PR_NUMBER} re-validated at ${EVENT_HEAD_SHA}"
-      - name: Approve and enable auto-merge (squash, pinned to the validated head)
+      - name: Approve at the validated head and enable auto-merge (squash)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          gh pr review "$PR_URL" --approve --body "Auto-approving a Dependabot bundler patch/minor update. The required CI check still gates the merge."
+          # Narrow the validate->approve window, then pin the approval itself
+          # to the validated commit via the API (gh pr review has no
+          # head-binding flag). The merge is additionally pinned with
+          # --match-head-commit, and the revoke job below plus the
+          # dismiss-stale-reviews branch rule cover later head movement.
+          current="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .head.sha)"
+          if [ "$current" != "$EVENT_HEAD_SHA" ]; then
+            echo "::error::Head moved to ${current} after validation; refusing to approve"
+            exit 1
+          fi
+          gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+            -f commit_id="$EVENT_HEAD_SHA" \
+            -f event=APPROVE \
+            -f body="Auto-approving a Dependabot bundler patch/minor update at ${EVENT_HEAD_SHA}. The required CI check still gates the merge."
           gh pr merge "$PR_URL" --auto --squash --match-head-commit "$EVENT_HEAD_SHA"
+
+  # Auto-merge enablement survives pushes by users with write access, and
+  # those human-triggered synchronize events skip the validation path above.
+  # Retract the automation instead: dismiss-stale-reviews (branch rule)
+  # retracts the bot approval; this job retracts the pending auto-merge.
+  revoke:
+    name: Revoke auto-merge on human intervention
+    if: github.event.action == 'synchronize' && github.event.pull_request.user.login == 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' && startsWith(github.event.pull_request.head.ref, 'dependabot/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # disabling auto-merge requires merge authority
+      pull-requests: write # auto-merge state lives on the PR
+    steps:
+      - name: Disable any pending auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          enabled="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge != null')"
+          if [ "$enabled" = "true" ]; then
+            gh pr merge "$PR_URL" --disable-auto
+            echo "Auto-merge disabled: a non-Dependabot actor pushed to this Dependabot PR."
+          else
+            echo "Auto-merge was not enabled; nothing to revoke."
+          fi
