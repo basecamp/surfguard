@@ -10,9 +10,9 @@ if ENV["COVERAGE"]
     enable_coverage :branch
     add_filter "/test/"
 
-    # Measured actuals are 100/100 (66/66 lines, 24/24 branches), so the
-    # thresholds pin them there: any change that leaves a line or branch
-    # untested fails loudly.
+    # Measured actuals are 100/100 across lib/ and the release scripts the
+    # suite loads, so the thresholds pin them there: any change that leaves
+    # a line or branch untested fails loudly.
     minimum_coverage line: 100, branch: 100
   end
 end

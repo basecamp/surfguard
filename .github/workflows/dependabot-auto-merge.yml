@@ -152,3 +152,20 @@ jobs:
           else
             echo "Auto-merge was not enabled; nothing to revoke."
           fi
+      - name: Dismiss any standing bot approvals
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # The main ruleset's dismiss-stale-reviews rule already retracts
+          # approvals on push; this makes the workflow self-contained rather
+          # than dependent on that setting staying configured.
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED") | .id' |
+          while IFS= read -r review_id; do
+            gh api --method PUT "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" \
+              -f message="Dismissing the automated approval: a non-Dependabot actor pushed to this PR after it was granted." \
+              -f event=DISMISS
+            echo "Dismissed review ${review_id}"
+          done

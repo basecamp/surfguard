@@ -52,8 +52,10 @@ Rehearse before every first-of-its-kind release.
    - `gh attestation verify surfguard-X.Y.Z.gem --signer-workflow basecamp/surfguard/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` —
      constrain by signer workflow **and** source ref, not just `--repo`.
      (A release finished by the recovery workflow is signed by it instead:
-     use `--signer-workflow basecamp/surfguard/.github/workflows/release-recovery.yml`
-     with the same `--source-ref`.)
+     use `--signer-workflow basecamp/surfguard/.github/workflows/release-recovery.yml`,
+     with `--source-ref refs/tags/vX.Y.Z` when recovery was dispatched on the
+     tag — the preferred mode — or `--source-ref refs/heads/main` when it had
+     to be dispatched on `main`.)
 6. **First release only:** verify durable ownership on RubyGems — the gem
    sits under the RubyGems `basecamp` organization / the correct owner
    accounts with MFA enforced — before announcing.
@@ -81,17 +83,31 @@ any conflict. Recovery rules, by failure state:
 | Bad published release | Never re-point or delete the tag. Ship a new patch version (per SECURITY.md, fixes ship as new releases). Yank only for security-critical cases. |
 
 `release-recovery.yml` never publishes and never mints RubyGems credentials.
-It is gated by the `release-recovery` environment (same reviewer as
-publishing — attestation and Release creation are release authority, not
-general write-collaborator authority) and it refuses to act on anything it
-cannot prove: the `vX.Y.Z` tag must already exist on `main` (so a typo can
-never attest an arbitrary registry version or mint a fresh tag at the
-default-branch tip), and it **rebuilds the gem from the tagged source with
-the tag's own toolchain pins** and requires the rebuilt digest to equal the
-canonical RubyGems digest before attesting. That digest equality is what
-makes the recovery attestation honest: the attested bytes are demonstrably
-the product of the tagged source, not merely whatever the registry served.
-A mismatch stops the workflow for a human.
+It mirrors the release pipeline's privilege separation: an **unprivileged
+`verify` job** proves the `vX.Y.Z` tag exists on `main` (so a typo can never
+attest an arbitrary registry version or mint a fresh tag at the
+default-branch tip), extracts the tagged source to the side with
+`git archive` (the recovery helpers keep running from the dispatch revision,
+not the possibly-defective tag), **rebuilds the gem with the tag's own
+toolchain pins**, and requires the rebuilt digest to equal the canonical
+RubyGems digest. Only then does the **reviewer-gated `finish` job**
+(`release-recovery` environment, same reviewer as publishing, no checkout)
+attest and create the GitHub Release from the canonical bytes. That digest
+equality is what makes the recovery attestation honest: the attested bytes
+are demonstrably the product of the tagged source, not merely whatever the
+registry served. A mismatch stops the workflow for a human.
+
+Dispatch recovery **on the release tag** when possible:
+
+```sh
+gh workflow run release-recovery.yml --ref vX.Y.Z --field version=X.Y.Z
+```
+
+so the attestation's source ref binds to `refs/tags/vX.Y.Z` and the
+documented `--source-ref` verification holds. Dispatch on `main`
+(`--ref main`) only when the tag's own copy of the recovery workflow is
+defective; provenance then binds to `refs/heads/main`, and the binding to
+the tag rests on the run's logged rebuild-equality proof.
 
 ## Threat model — an honest limitation
 
@@ -143,9 +159,10 @@ Replace IDs where noted.
    ```
 
 3a. **Environment `release-recovery`** — same reviewer and
-   `can_admins_bypass: false` as above, with a deployment branch policy of
-   `main` (branch type): the recovery workflow dispatches from `main`, not
-   from a tag. Gates `release-recovery.yml`'s attestation + Release
+   `can_admins_bypass: false` as above, with deployment branch policies for
+   both `main` (branch type) and `v*` (tag type): recovery is preferably
+   dispatched on the release tag (binding provenance to it) and falls back
+   to `main`. Gates `release-recovery.yml`'s attestation + Release
    permissions behind the same human as publishing.
 
 4. **Tag rulesets** — two separate rulesets on `refs/tags/v*`, enforcement
@@ -154,10 +171,12 @@ Replace IDs where noted.
    actors. Read back both, asserting enforcement and bypass lists.
 
 5. **Main branch ruleset** — require PRs (≥ 1 approving review, code-owner
-   review), required status check **`CI`** bound to the GitHub Actions app
-   (integration_id **15368**) with strict up-to-date policy, block deletion +
-   force pushes. Bypass: the release team with `bypass_mode: pull_request`
-   (so Jeremy's own PRs don't deadlock on self-approval). Read back.
+   review, **dismiss stale approvals on push** — the Dependabot automation's
+   revoke path assumes it), required status check **`CI`** bound to the
+   GitHub Actions app (integration_id **15368**) with strict up-to-date
+   policy, block deletion + force pushes. Bypass: the release team with
+   `bypass_mode: pull_request` (so Jeremy's own PRs don't deadlock on
+   self-approval). Read back.
 
 6. **Server-side SHA pinning** — after the pinned workflows merge, enable
    "require actions to be pinned to a full-length commit SHA"; read back.

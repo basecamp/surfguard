@@ -239,6 +239,7 @@ module Surfguard
             begin
               response = get_once(version_uri(version))
             rescue RetryableFault
+              malformed = 0
               faults += 1
               @sleeper.call(BACKOFF_BASE * faults)
               next
@@ -259,8 +260,10 @@ module Surfguard
               raise Error, "registry reports #{@name} #{version} with sha256 #{published}; " \
                            "our artifact is #{sha256} — stopping for a human"
             when 404
+              malformed = 0
               @sleeper.call(POLL_INTERVAL)
             when 429, 500..599
+              malformed = 0
               faults += 1
               @sleeper.call(BACKOFF_BASE * faults)
             else

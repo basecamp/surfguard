@@ -15,8 +15,14 @@ module Surfguard
       REQUIRED_FILES = %w[ lib/surfguard.rb lib/surfguard/version.rb README.md LICENSE SECURITY.md ].freeze
       ALLOWED_PATTERNS = [ %r{\Alib/.+\.rb\z}, /\AREADME\.md\z/, /\ALICENSE\z/, /\ASECURITY\.md\z/ ].freeze
 
-      # Keep child processes honest: no bundler or ruby options leaking in from CI.
-      CLEAN_ENV = { "RUBYOPT" => nil, "BUNDLE_GEMFILE" => nil, "BUNDLE_PATH" => nil }.freeze
+      # Keep child processes honest: no bundler, ruby options, or load-path
+      # additions leaking in from CI — RUBYLIB especially, which could let
+      # `require "surfguard"` resolve from the checkout instead of the
+      # installed gem and wave a broken package through.
+      CLEAN_ENV = {
+        "RUBYOPT" => nil, "RUBYLIB" => nil,
+        "BUNDLE_GEMFILE" => nil, "BUNDLE_PATH" => nil
+      }.freeze
 
       # Live wiring: subprocesses run for real. Tests inject a scripted runner.
       # simplecov:disable

@@ -153,6 +153,19 @@ class RegistryTest < Minitest::Test
     assert_match(/malformed JSON/, error.message)
   end
 
+  def test_confirm_malformed_tolerance_is_consecutive_not_cumulative
+    # MALFORMED_LIMIT malformed bodies arrive, but interleaved with healthy
+    # non-malformed outcomes — the counter must reset each time.
+    registry = scripted(
+      res(200, "not json"), res(404),
+      res(200, "not json"), res(503),
+      res(200, "not json"), Net::ReadTimeout.new,
+      res(200, version_json),
+      res(200, version_json), res(200, BYTES)
+    )
+    assert_equal BYTES, registry.confirm(VERSION, DIGEST)
+  end
+
   def test_confirm_backs_off_through_429_5xx_and_network_faults_while_polling
     registry = scripted(
       res(429), res(503), Net::ReadTimeout.new,
