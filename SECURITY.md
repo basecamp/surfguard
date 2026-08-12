@@ -31,7 +31,8 @@ Non-security bugs and questions belong in the
 
 ## Supported versions
 
-The latest released version. Fixes ship as a new release, not backports.
+No packaged release exists yet, so `main` is the supported version. Once releases ship, it
+becomes the latest released version. Fixes ship as a new release, not backports.
 
 ## What to expect
 

@@ -1,0 +1,12 @@
+inherit_gem:
+  rubocop-37signals: rubocop.yml
+
+AllCops:
+  TargetRubyVersion: 3.1
+  SuggestExtensions: false
+
+# assert_not is ActiveSupport, not minitest. This suite runs on bare Ruby
+# (no bundle, no Rails) in the CI matrix, so refute is the only spelling
+# that actually exists there.
+Rails/RefuteMethods:
+  Enabled: false

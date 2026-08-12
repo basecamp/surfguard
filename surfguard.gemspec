@@ -5,7 +5,7 @@ require_relative "lib/surfguard/version"
 Gem::Specification.new do |spec|
   spec.name        = "surfguard"
   spec.version     = Surfguard::VERSION
-  spec.authors     = ["37signals"]
+  spec.authors     = [ "37signals" ]
   spec.summary     = "One SSRF address policy: resolve a host and classify special-use IPv4/IPv6 ranges"
   spec.description = "Surfguard resolves a hostname to the public IP addresses it " \
                      "points at and refuses anything that would reach an internal " \
@@ -24,11 +24,12 @@ Gem::Specification.new do |spec|
   # tracker is the one distinct link worth adding.
   spec.metadata = {
     "bug_tracker_uri"       => "#{spec.homepage}/issues",
+    "changelog_uri"         => "#{spec.homepage}/releases",
     "rubygems_mfa_required" => "true"
   }
 
-  spec.files = Dir["lib/**/*.rb", "README.md", "LICENSE"]
-  spec.require_paths = ["lib"]
+  spec.files = Dir["lib/**/*.rb", "README.md", "LICENSE", "SECURITY.md"]
+  spec.require_paths = [ "lib" ]
 
   # Standard library only: ipaddr, resolv, uri. No runtime dependencies on
   # purpose — this must drop into apps on wildly different gem sets.

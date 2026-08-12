@@ -1,0 +1,66 @@
+name: Release recovery
+
+# For exactly one state: the gem push SUCCEEDED but downstream jobs failed AND
+# the tagged workflow itself is defective (re-running the tag can't fix it,
+# and the tag must never move). This workflow downloads the canonical .gem
+# from RubyGems, verifies its digest against the registry-reported SHA-256,
+# and finishes attestation + the GitHub Release from those verified canonical
+# bytes. It never publishes and never mints RubyGems credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to recover (e.g. 0.1.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+# Shares the release group: recovery never runs concurrently with a release.
+concurrency:
+  group: release-publishing
+  cancel-in-progress: false
+
+env:
+  RUBY_VERSION: "3.4.10"
+
+jobs:
+  recover:
+    name: Recover from verified canonical bytes
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Sigstore signing needs the OIDC identity
+      attestations: write # the attestation is stored via the attestations API
+      contents: write # creating the GitHub Release writes to the repo
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Validate the version input
+        run: |
+          if ! printf '%s' "$VERSION" | grep --extended-regexp --quiet '^[0-9]+(\.[A-Za-z0-9]+)*$'; then
+            echo "::error::Not a plausible gem version: ${VERSION}"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: false
+      - name: Download the canonical bytes from RubyGems (verified against the registry-reported digest)
+        run: |
+          digest="$(ruby script/release/registry_download.rb surfguard "$VERSION" "surfguard-${VERSION}.gem")"
+          echo "canonical surfguard-${VERSION}.gem sha256=${digest}"
+      - name: Attest build provenance for the canonical bytes (SLSA predicate)
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: surfguard-${{ inputs.version }}.gem
+      - name: Create the GitHub Release from the canonical bytes
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # zizmor: ignore[superfluous-actions,ref-version-mismatch] -- pinned at v3.0.2; deliberate: fail_on_unmatched_files + generate_release_notes + prerelease handling in one reviewed, pinned action beats reimplementing them in shell
+        with:
+          tag_name: v${{ inputs.version }}
+          generate_release_notes: true
+          files: surfguard-${{ inputs.version }}.gem
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(inputs.version, '-') }}
