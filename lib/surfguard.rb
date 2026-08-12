@@ -2,6 +2,7 @@
 
 require "ipaddr"
 require "resolv"
+require "socket"
 require "uri"
 
 require_relative "surfguard/version"
@@ -15,13 +16,16 @@ require_relative "surfguard/version"
 # Two policy decisions the copies drifted on, settled here and explained where
 # they live in the code:
 #
-#   * Resolver (see .resolve_public_ips): resolve with Resolv.getaddresses, which
-#     honours /etc/hosts and search domains AND returns every address. One copy
-#     used Resolv.getaddress (honours hosts, but only the FIRST address, so an
-#     AAAA-only host deterministically selected the IPv6 path); another used
-#     Resolv::DNS.open (all addresses, but ignores /etc/hosts, so it validated a
-#     different set than Net::HTTP would actually connect to). getaddresses is
-#     both complete and faithful to what the connection layer resolves.
+#   * Resolver (see .resolve_public_ips): first use getaddrinfo's numeric-only
+#     parser so legacy decimal, hex, octal, and short IPv4 forms mean exactly
+#     what they do to Net::HTTP; never send those tokens to DNS. Names resolve
+#     with Resolv.getaddresses, which honours /etc/hosts and search domains AND
+#     returns every address. One copy used Resolv.getaddress (honours hosts, but
+#     only the FIRST address, so an AAAA-only host deterministically selected the
+#     IPv6 path); another used Resolv::DNS.open (all addresses, but ignores
+#     /etc/hosts, so it validated a different set than Net::HTTP would connect
+#     to). getaddresses is complete for Ruby's hosts-plus-DNS chain; system
+#     getaddrinfo may additionally consult NSS sources such as mDNS or LDAP.
 #
 #   * `no-aaaa` in Kamal `dns-opt` is NOT a mitigation. It is a glibc
 #     getaddrinfo option; every guard here resolves through pure-Ruby Resolv,
@@ -38,6 +42,12 @@ require_relative "surfguard/version"
 # resolved address is public.
 module Surfguard
   class Violation < StandardError; end
+
+  # Internal signal for something IPAddr can parse, but which is a network
+  # rather than a host. Keep it separate from a lookup failure: callers must
+  # refuse these inputs without asking DNS to reinterpret them as names.
+  class InvalidHost < ArgumentError; end
+  private_constant :InvalidHost
 
   # The host answered with no address at all. Deliberately NOT a Violation:
   # nothing was refused here, the lookup simply came back empty, which is
@@ -78,12 +88,29 @@ module Surfguard
   DISALLOWED_IPV6 = [
     IPAddr.new("::/128"),           # Unspecified (RFC 4291)
     IPAddr.new("100::/64"),         # Discard-only (RFC 6666)
+    IPAddr.new("100:0:0:1::/64"),   # Dummy IPv6 destination (RFC 9780)
     IPAddr.new("2001::/32"),        # Teredo (RFC 4380)
     IPAddr.new("2001:2::/48"),      # Benchmark testing (RFC 5180)
     IPAddr.new("2001:db8::/32"),    # Documentation (RFC 3849)
     IPAddr.new("2002::/16"),        # 6to4 (RFC 3056)
+    IPAddr.new("3fff::/20"),        # Documentation (RFC 9637)
+    IPAddr.new("5f00::/16"),        # SRv6 SIDs, confined to SR domains (RFC 9602)
     IPAddr.new("fec0::/10"),        # Deprecated site-local (RFC 3879)
     IPAddr.new("ff00::/8")          # Multicast (RFC 4291)
+  ].freeze
+
+  # The IANA parent assignment is non-source, non-destination, non-forwardable,
+  # and non-global unless a more-specific allocation says otherwise. Refuse it
+  # by default so unallocated/future-special space cannot become an internal
+  # fetch path. These are the current, narrowly scoped IP-layer services whose
+  # registrations explicitly permit globally reachable destinations without
+  # selecting nearby infrastructure. PCP, TURN, and DNS-SD SRP anycast remain
+  # refused because they deliberately target on-path or local services. ORCHID,
+  # ORCHIDv2, and DET are overlay identifiers, not ordinary IP-layer locators.
+  IETF_PROTOCOL_ASSIGNMENTS = IPAddr.new("2001::/23")
+  GLOBALLY_REACHABLE_IETF_ASSIGNMENTS = [
+    IPAddr.new("2001:3::/32"),       # AMT (RFC 7450)
+    IPAddr.new("2001:4:112::/48")    # AS112-v6 (RFC 7535)
   ].freeze
 
   # NAT64 embeds an IPv4 target that must be re-checked as IPv4. The well-known
@@ -123,6 +150,8 @@ module Surfguard
              .partition(&:ipv4?)
              .flatten
              .map(&:to_s)
+  rescue InvalidHost
+    []
   end
 
   # True only if the URL's host resolves to at least one address and NONE are
@@ -171,6 +200,7 @@ module Surfguard
   # it cannot parse is blocked.
   def blocked_address?(ip)
     ipaddr = ip.is_a?(IPAddr) ? ip : IPAddr.new(ip.to_s)
+    return true unless host_address?(ipaddr)
 
     # DNS never legitimately returns an IPv4 address embedded these two ways, so
     # refuse them regardless of the address they wrap.
@@ -191,15 +221,19 @@ module Surfguard
 
   private
 
-  # An IP-literal host skips DNS so a public literal URL resolves directly and an
-  # internal literal is still caught by blocked_address?. Otherwise resolve via
-  # Resolv.getaddresses — the Hosts+DNS chain, matching what the connection layer
-  # will use, and returning every address. Returns [IPAddr].
+  # A numeric host skips DNS so a public literal URL resolves directly and an
+  # internal literal is still caught by blocked_address?. Socket's numeric-only
+  # parser comes first because it accepts every legacy IPv4 spelling the
+  # connection layer does (decimal, hex, octal, and shortened forms), while
+  # IPAddr does not. Otherwise resolve via Resolv.getaddresses, returning every
+  # address from Ruby's hosts-plus-DNS chain. System getaddrinfo may consult
+  # additional NSS sources; pinning an address returned here avoids that second
+  # resolution. Returns [IPAddr].
   def resolve(host)
-    literal = ip_literal(host)
+    literals = numeric_literals(host)
 
-    if literal
-      [ literal ]
+    if literals
+      literals
     else
       Resolv.getaddresses(host).map { |a| IPAddr.new(a) }
     end
@@ -207,13 +241,51 @@ module Surfguard
     []
   end
 
-  # nil for anything that isn't already an address. Kept separate so the DNS
-  # call above sits in the method body, where the ResolvError rescue can reach
-  # it — inside a sibling rescue clause it could not.
+  # Every address Socket's numeric-only parser finds. AI_NUMERICHOST guarantees
+  # this call never falls through to DNS. Its success is authoritative: these
+  # tokens must not be reinterpreted as names by Resolv, because Net::HTTP's
+  # getaddrinfo call will reinterpret them as the numeric addresses returned
+  # here. IPAddr remains as a fallback for syntax it alone accepts, notably a
+  # full-width /32 or /128 host prefix. nil means the token is a name.
+  def numeric_literals(host)
+    Socket.getaddrinfo(
+      host, nil, Socket::AF_UNSPEC, Socket::SOCK_STREAM, 0, Socket::AI_NUMERICHOST
+    ).map { |address| IPAddr.new(address[3]) }.uniq
+  rescue SocketError
+    literal = ip_literal(host)
+    return [ literal ] if literal
+
+    # An ordinary name may proceed to Resolv after AI_NUMERICHOST says it is
+    # not numeric. A token shaped like a legacy IPv4 spelling may not: if the
+    # system numeric parser itself failed abnormally, asking DNS would recreate
+    # the parser/resolver identity gap this method exists to close.
+    raise InvalidHost, "numeric-looking host #{host.inspect} could not be classified" if numeric_host_candidate?(host)
+
+    nil
+  end
+
+  def numeric_host_candidate?(host)
+    text = host.to_s
+    return true if text.include?(":") # Invalid IPv6 syntax is never a DNS name.
+
+    parts = text.split(".", -1)
+    (1..4).cover?(parts.length) &&
+      parts.all? { |part| part.match?(/\A(?:0[xX][0-9A-Fa-f]+|[0-9]+)\z/) }
+  end
+
+  # nil for anything IPAddr cannot parse. A shortened prefix is not a host and
+  # is rejected rather than normalized to its network address or sent to DNS.
   def ip_literal(host)
-    IPAddr.new(host)
+    ipaddr = IPAddr.new(host)
+    raise InvalidHost, "#{host.inspect} is a network, not a host" unless host_address?(ipaddr)
+
+    ipaddr
   rescue IPAddr::InvalidAddressError
     nil
+  end
+
+  def host_address?(ipaddr)
+    ipaddr.prefix == (ipaddr.ipv4? ? 32 : 128)
   end
 
   def host_of(url)
@@ -232,7 +304,10 @@ module Surfguard
   end
 
   def disallowed_ipv6?(ipaddr)
+    return false if GLOBALLY_REACHABLE_IETF_ASSIGNMENTS.any? { |range| range.include?(ipaddr) }
+
     ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? ||
+      IETF_PROTOCOL_ASSIGNMENTS.include?(ipaddr) ||
       DISALLOWED_IPV6.any? { |range| range.include?(ipaddr) }
   end
 
