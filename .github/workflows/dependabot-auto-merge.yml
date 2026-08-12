@@ -165,7 +165,6 @@ jobs:
             --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED") | .id' |
           while IFS= read -r review_id; do
             gh api --method PUT "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" \
-              -f message="Dismissing the automated approval: a non-Dependabot actor pushed to this PR after it was granted." \
-              -f event=DISMISS
+              -f message="Dismissing the automated approval: a non-Dependabot actor pushed to this PR after it was granted."
             echo "Dismissed review ${review_id}"
           done

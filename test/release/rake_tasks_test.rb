@@ -66,6 +66,15 @@ class RakeTasksTest < Minitest::Test
     assert_untouched
   end
 
+  def test_bump_rewrites_version_and_refreshes_the_lockfile
+    add_bundler_fixture
+
+    status, output = run_rake("bump[0.2.0]")
+    assert_predicate status, :success?, -> { output }
+    assert_equal "0.2.0", read_version
+    assert_includes File.read(File.join(@work, "Gemfile.lock")), "surfguard (0.2.0)"
+  end
+
   # --- tag guards -------------------------------------------------------------
 
   def test_tag_rejects_a_dirty_tree
@@ -123,12 +132,48 @@ class RakeTasksTest < Minitest::Test
       system("git", "-C", @work, *args, exception: true, out: File::NULL)
     end
 
+    # A minimal gemspec + Gemfile + lock so bump's `bundle install` has a
+    # real lockfile to refresh. No remote dependencies, so this stays offline.
+    def add_bundler_fixture
+      File.write(File.join(@work, "surfguard.gemspec"), <<~RUBY)
+        # frozen_string_literal: true
+
+        require_relative "lib/surfguard/version"
+
+        Gem::Specification.new do |spec|
+          spec.name    = "surfguard"
+          spec.version = Surfguard::VERSION
+          spec.summary = "fixture"
+          spec.authors = [ "test" ]
+        end
+      RUBY
+      File.write(File.join(@work, "Gemfile"), <<~RUBY)
+        # frozen_string_literal: true
+
+        source "https://rubygems.org"
+
+        gemspec
+      RUBY
+      system(clean_env, "bundle", "install", "--quiet", chdir: @work, exception: true)
+      git "add", "-A"
+      git "commit", "--quiet", "--message", "bundler fixture"
+    end
+
+    # Scrub every bundler/ruby knob the surrounding `bundle exec` exported,
+    # so subprocesses see the fixture repo the way a developer's shell would.
+    def clean_env
+      env = ENV.keys.grep(/\ABUNDLE/).to_h { |key| [ key, nil ] }
+      env.merge("RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil)
+    end
+
     def run_rake(task)
-      env = {
-        "BUNDLE_GEMFILE" => nil, "BUNDLE_PATH" => nil, "BUNDLE_BIN" => nil,
-        "RUBYOPT" => nil, "RUBYLIB" => nil
-      }
-      output, status = Open3.capture2e(env, Gem.ruby, "-S", "rake", "--rakefile", "Rakefile", task, chdir: @work)
+      # Invoke rake as a library, not via its binstub: with the bundler
+      # fixture's Gemfile.lock in place, RubyGems' binstub activation would
+      # restrict `rake` to the fixture bundle (which has no rake).
+      output, status = Open3.capture2e(
+        clean_env, Gem.ruby, "-rrake", "-e", "Rake.application.run",
+        "--", "--rakefile", "Rakefile", task, chdir: @work
+      )
       [ status, output ]
     end
 
