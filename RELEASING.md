@@ -71,7 +71,7 @@ any conflict. Recovery rules, by failure state:
 
 | State | Recovery |
 |---|---|
-| Failure before `gem push` ran (test/build/reconciliation) | Fix on `main`; delete the unpublished tag (release-team bypass); re-tag. Allowed **only** because nothing was published. |
+| Failure before `gem push` ran (test/build/reconciliation) | Fix on `main`; delete the unpublished tag; re-tag. Allowed **only** because nothing was published. Tag deletion has **no standing bypass** — an admin must temporarily lift the `release-tags-immutable` ruleset, delete, and re-enable it. That friction is deliberate. |
 | Push succeeded; confirm/attest/release failed | Re-run the same run/tag. Reconciliation sees same-SHA → skips the push; downstream completes idempotently. |
 | **Ambiguous push result** (push errored/timed out; registry state unknown) | Never use a later 404 to justify deleting or moving the tag. Poll, then **download the canonical RubyGems bytes and compare digests**. Match → re-run the same tag to finish. Absent after bounded polling → re-run the same tag (reconciliation decides). Indeterminate/conflicting → **stop; contact RubyGems support**. |
 | Workflow defect embedded in a published tag | Re-runs use the tagged workflow; fixing `main` doesn't fix the tag. Never move/delete the tag. Run `release-recovery.yml` (dispatch with the version) to finish attestation + the GitHub Release from verified canonical registry bytes; ship the workflow fix in the next version. |
