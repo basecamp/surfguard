@@ -11,15 +11,6 @@ full IPv4 × IPv6 range matrix.
 
 ## Installation
 
-Not yet published to RubyGems — `v0.1.0` will be the first packaged release. Until it ships,
-install from source:
-
-```ruby
-gem "surfguard", github: "basecamp/surfguard"
-```
-
-Once `v0.1.0` is published:
-
 ```ruby
 gem "surfguard"
 ```
