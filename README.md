@@ -77,6 +77,7 @@ question it was asked and never raises; use `enforce_public_ip` or
 |---|---|
 | IPv4 private (10/8, 172.16/12, 192.168/16), loopback (127/8), link-local (169.254/16) | refuse |
 | CGNAT (100.64/10), benchmark (198.18/15), TEST-NETs, IETF (192.0.0/24), 6to4 relay anycast (192.88.99/24), multicast (224/4), reserved (240/4), "this" (0/8) | refuse |
+| Azure WireServer `168.63.129.16/32` | refuse — a fixed Azure platform/fabric alias, not an RFC special-use range |
 | IPv6 ULA (fc00::/7, incl. IMDSv6 `fd00:ec2::254`), loopback (::1), link-local (fe80::/10), site-local (fec0::/10), multicast (ff00::/8), unspecified (::), discard/dummy (100::/64, 100:0:0:1::/64), documentation (2001:db8::/32, 3fff::/20), SRv6 SID (5f00::/16) | refuse |
 | IETF protocol assignments (2001::/23) | refuse by default, including Teredo, benchmark, PCP/TURN/DNS-SD anycast to nearby infrastructure, deprecated ORCHID, ORCHIDv2, DET, and unallocated space; allow only AMT (2001:3::/32) and AS112-v6 (2001:4:112::/48) |
 | IPv4-mapped `::ffff:0:0/96`, IPv4-compatible `::/96` | refuse outright |

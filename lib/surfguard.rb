@@ -59,15 +59,17 @@ module Surfguard
 
   extend self
 
-  # IPv4 special-use ranges that must never be a fetch target (RFC 5735/6890,
-  # plus CGNAT and benchmarking). RFC1918 / loopback / link-local are also
-  # covered by the IPAddr predicates in #disallowed_ipv4?; they are restated here
-  # so the policy is complete and auditable in one place.
+  # IPv4 special-use ranges and exact platform aliases that must never be a
+  # fetch target (RFC 5735/6890, plus CGNAT and benchmarking). RFC1918 /
+  # loopback / link-local are also covered by the IPAddr predicates in
+  # #disallowed_ipv4?; they are restated here so the policy is complete and
+  # auditable in one place.
   DISALLOWED_IPV4 = [
     IPAddr.new("0.0.0.0/8"),        # "This" network (RFC 1122)
     IPAddr.new("10.0.0.0/8"),       # Private (RFC 1918)
     IPAddr.new("100.64.0.0/10"),    # Carrier-grade NAT (RFC 6598)
     IPAddr.new("127.0.0.0/8"),      # Loopback (RFC 1122)
+    IPAddr.new("168.63.129.16/32"), # Azure host-node WireServer virtual IP
     IPAddr.new("169.254.0.0/16"),   # Link-local (RFC 3927) — includes the cloud metadata endpoint
     IPAddr.new("172.16.0.0/12"),    # Private (RFC 1918)
     IPAddr.new("192.0.0.0/24"),     # IETF protocol assignments (RFC 6890)
