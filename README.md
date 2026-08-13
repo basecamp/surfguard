@@ -97,7 +97,9 @@ local overlay rather than routed as ordinary public IP destinations.
 **1. Numeric parsing and name resolution are both part of the policy.** Before asking DNS,
 Surfguard asks the system numeric-host parser used by `Socket`/`Net::HTTP` whether the token is an
 address. This recognizes non-canonical decimal, hexadecimal, octal, and shortened IPv4 forms. A
-numeric token is classified directly and is never sent through DNS or a search domain.
+numeric token is classified directly and is never sent through DNS or a search domain. Malformed
+IPv4-shaped variants with empty dot labels or invalid zone/prefix suffixes are refused rather than
+reinterpreted as DNS names.
 
 Names resolve with `Resolv.getaddresses`, which uses Ruby's usual hosts-plus-DNS chain, honours
 search domains, and returns every address. The obvious alternatives each drop something a guard

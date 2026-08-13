@@ -84,6 +84,41 @@ class SurfguardTest < Minitest::Test
     "hex link-local"              => "0xa9fea9fe"
   }.freeze
 
+  MALFORMED_NUMERIC_HOSTS = %w[
+    127.0.0.1.
+    127.1.
+    2130706433.
+    0x7f000001.
+    168.63.129.16.
+    93.184.216.34.
+    .127.0.0.1
+    127..1
+    127.0.0.1%0
+    127.0.0.1..
+    127...1
+    .1
+    1..
+    01.02.03.04.
+    0X7F000001.
+    0x7f.0.0.1.
+    0x7f..1
+    127.0.0.1%lo
+    127.0.0.1%25lo
+    127.0.0.1/33
+    127.0.0.1/-1
+    127.0.0.1/foo
+    127.1/8
+    2130706433/32
+    %127.0.0.1
+    /127.0.0.1
+    //127.0.0.1
+    %%127.0.0.1
+    /%127.0.0.1
+    %127.0.0.1%lo
+    /127.0.0.1/32
+    //127.0.0.1/
+  ].freeze
+
   NON_HOST_PREFIXES = %w[
     0.0.0.0/0
     ::/0
@@ -137,6 +172,19 @@ class SurfguardTest < Minitest::Test
 
   def test_siit_and_mapped_prefixes_do_not_overlap
     refute Surfguard::IPV4_TRANSLATABLE.include?(IPAddr.new("::ffff:169.254.169.254"))
+  end
+
+  def test_ipv4_compatible_classification_does_not_depend_on_obsolete_ipaddr_api
+    ipaddr_without_compat = Class.new(IPAddr) do
+      # Guarded: undef_method raises NameError when nothing is inherited, so an
+      # unguarded call would fail this test on the very ipaddr version whose
+      # removal of ipv4_compat? it exists to cover.
+      undef_method :ipv4_compat? if method_defined?(:ipv4_compat?)
+    end
+
+    assert Surfguard.blocked_address?(ipaddr_without_compat.new("::93.184.216.34"))
+    assert Surfguard.blocked_address?(ipaddr_without_compat.new("::ffff:93.184.216.34"))
+    refute Surfguard.blocked_address?(ipaddr_without_compat.new("::ffff:0:5db8:d822"))
   end
 
   def test_blocks_an_unparseable_address
@@ -283,6 +331,67 @@ class SurfguardTest < Minitest::Test
   ensure
     Socket.define_singleton_method(:getaddrinfo, original_getaddrinfo)
     Resolv.define_singleton_method(:getaddresses, original_getaddresses)
+  end
+
+  def test_malformed_numeric_hosts_are_refused_without_dns
+    original = Resolv.method(:getaddresses)
+    dns_queries = []
+    Resolv.define_singleton_method(:getaddresses) do |host|
+      dns_queries << host
+      [ "93.184.216.34" ] # Model a public wildcard/search-domain answer.
+    end
+
+    MALFORMED_NUMERIC_HOSTS.each do |host|
+      assert_empty Surfguard.resolve_public_ips(host), host
+    end
+    assert_empty dns_queries
+  ensure
+    Resolv.define_singleton_method(:getaddresses, original)
+  end
+
+  def test_malformed_numeric_hosts_are_refused_before_a_loose_platform_parser
+    original_getaddrinfo = Socket.method(:getaddrinfo)
+    original_getaddresses = Resolv.method(:getaddresses)
+    numeric_queries = []
+    dns_queries = []
+    Socket.define_singleton_method(:getaddrinfo) do |host, *|
+      numeric_queries << host
+      [ [ "AF_INET", nil, nil, "93.184.216.34" ] ]
+    end
+    Resolv.define_singleton_method(:getaddresses) do |host|
+      dns_queries << host
+      [ "93.184.216.34" ]
+    end
+
+    url = "http://93.184.216.34./"
+    assert_empty Surfguard.resolve_public_ips("93.184.216.34.")
+    assert_nil Surfguard.resolve_public_ip(url)
+    refute Surfguard.resolvable_public_ip?(url)
+    assert_raises(Surfguard::Violation) { Surfguard.enforce_public_ip(url) }
+    assert_empty numeric_queries
+    assert_empty dns_queries
+  ensure
+    Socket.define_singleton_method(:getaddrinfo, original_getaddrinfo)
+    Resolv.define_singleton_method(:getaddresses, original_getaddresses)
+  end
+
+  def test_numeric_label_hostnames_still_reach_dns
+    names = %w[
+      123.example
+      123.example.
+      0xfoo.example
+      0x7f000001.example
+      127.example
+      127.0.0.1.example
+      1.2.3.4.5
+      example.com.
+    ]
+
+    stub_getaddresses(names.to_h { |name| [ name, [ "93.184.216.34" ] ] }) do
+      names.each do |name|
+        assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips(name), name
+      end
+    end
   end
 
   def test_non_host_prefixes_are_rejected_without_dns

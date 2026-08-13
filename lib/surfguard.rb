@@ -137,6 +137,11 @@ module Surfguard
   # the NAT64 well-known prefix it is a fixed /96, so decode the low 32 bits.
   IPV4_TRANSLATABLE = IPAddr.new("::ffff:0:0:0/96") # RFC 2765
 
+  # IPv4-compatible IPv6 is deprecated and must never be a DNS fetch target.
+  # Classify the prefix directly instead of calling IPAddr#ipv4_compat?, which
+  # has been obsolete since Ruby 2.5 and is expected to disappear in ipaddr 2.x.
+  IPV4_COMPATIBLE = IPAddr.new("::/96")
+
   # Every PUBLIC address the host resolves to, IPv4 ahead of IPv6, DNS order
   # preserved within each family so a provider's round-robin still spreads load.
   # Empty when the host resolves but every address is blocked; raises
@@ -206,7 +211,7 @@ module Surfguard
 
     # DNS never legitimately returns an IPv4 address embedded these two ways, so
     # refuse them regardless of the address they wrap.
-    if ipaddr.ipv4_mapped? || ipaddr.ipv4_compat?
+    if ipaddr.ipv4_mapped? || IPV4_COMPATIBLE.include?(ipaddr)
       true
     elsif ipaddr.ipv4?
       disallowed_ipv4?(ipaddr)
@@ -250,6 +255,13 @@ module Surfguard
   # here. IPAddr remains as a fallback for syntax it alone accepts, notably a
   # full-width /32 or /128 host prefix. nil means the token is a name.
   def numeric_literals(host)
+    # Refuse malformed IPv4-shaped text before consulting the platform parser.
+    # Some connection layers may accept decorations that others reject; none
+    # may turn them into a public DNS name after Surfguard classified them.
+    if malformed_numeric_host_candidate?(host)
+      raise InvalidHost, "malformed numeric-looking host #{host.inspect}"
+    end
+
     Socket.getaddrinfo(
       host, nil, Socket::AF_UNSPEC, Socket::SOCK_STREAM, 0, Socket::AI_NUMERICHOST
     ).map { |address| IPAddr.new(address[3]) }.uniq
@@ -270,9 +282,40 @@ module Surfguard
     text = host.to_s
     return true if text.include?(":") # Invalid IPv6 syntax is never a DNS name.
 
-    parts = text.split(".", -1)
+    legacy_ipv4_shape?(text)
+  end
+
+  def malformed_numeric_host_candidate?(host)
+    text = host.to_s
+    return false if text.include?(":") # IPv6 literals and zones go to AI_NUMERICHOST.
+
+    # Isolate the address: drop every leading separator, then keep only what
+    # precedes the next one. Removing a single separator would let a second one
+    # ("//127.0.0.1", "%127.0.0.1%lo") hide the legacy IPv4 shape, so the token
+    # would reach the platform parser and, failing there, be handed to DNS as a
+    # name — the parser/resolver identity gap this check exists to close.
+    core = text.sub(%r{\A[%/]+}, "")[%r{\A[^%/]*}]
+    labels = core.split(".", -1)
+    malformed = core != text || labels.any?(&:empty?)
+    return false unless malformed && legacy_ipv4_shape?(core)
+
+    # Full-width host prefixes are documented inputs and IPAddr parses them
+    # unambiguously. Shorter or otherwise invalid prefixes remain malformed.
+    return false if full_width_host_literal?(text)
+
+    true
+  end
+
+  def legacy_ipv4_shape?(text)
+    parts = text.split(".", -1).reject(&:empty?)
     (1..4).cover?(parts.length) &&
       parts.all? { |part| part.match?(/\A(?:0[xX][0-9A-Fa-f]+|[0-9]+)\z/) }
+  end
+
+  def full_width_host_literal?(text)
+    host_address?(IPAddr.new(text))
+  rescue IPAddr::InvalidAddressError
+    false
   end
 
   # nil for anything IPAddr cannot parse. A shortened prefix is not a host and
