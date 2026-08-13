@@ -289,15 +289,19 @@ module Surfguard
     text = host.to_s
     return false if text.include?(":") # IPv6 literals and zones go to AI_NUMERICHOST.
 
-    address, separator, remainder = text.partition(/[%\/]/)
-    address = remainder if address.empty?
-    labels = address.split(".", -1)
-    malformed = !separator.empty? || labels.any?(&:empty?)
-    return false unless malformed && legacy_ipv4_shape?(address)
+    # Isolate the address: drop every leading separator, then keep only what
+    # precedes the next one. Removing a single separator would let a second one
+    # ("//127.0.0.1", "%127.0.0.1%lo") hide the legacy IPv4 shape, so the token
+    # would reach the platform parser and, failing there, be handed to DNS as a
+    # name — the parser/resolver identity gap this check exists to close.
+    core = text.sub(%r{\A[%/]+}, "")[%r{\A[^%/]*}]
+    labels = core.split(".", -1)
+    malformed = core != text || labels.any?(&:empty?)
+    return false unless malformed && legacy_ipv4_shape?(core)
 
     # Full-width host prefixes are documented inputs and IPAddr parses them
     # unambiguously. Shorter or otherwise invalid prefixes remain malformed.
-    return false if separator == "/" && full_width_host_literal?(text)
+    return false if full_width_host_literal?(text)
 
     true
   end

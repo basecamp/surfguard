@@ -111,6 +111,12 @@ class SurfguardTest < Minitest::Test
     2130706433/32
     %127.0.0.1
     /127.0.0.1
+    //127.0.0.1
+    %%127.0.0.1
+    /%127.0.0.1
+    %127.0.0.1%lo
+    /127.0.0.1/32
+    //127.0.0.1/
   ].freeze
 
   NON_HOST_PREFIXES = %w[
@@ -170,7 +176,10 @@ class SurfguardTest < Minitest::Test
 
   def test_ipv4_compatible_classification_does_not_depend_on_obsolete_ipaddr_api
     ipaddr_without_compat = Class.new(IPAddr) do
-      undef_method :ipv4_compat?
+      # Guarded: undef_method raises NameError when nothing is inherited, so an
+      # unguarded call would fail this test on the very ipaddr version whose
+      # removal of ipv4_compat? it exists to cover.
+      undef_method :ipv4_compat? if method_defined?(:ipv4_compat?)
     end
 
     assert Surfguard.blocked_address?(ipaddr_without_compat.new("::93.184.216.34"))
