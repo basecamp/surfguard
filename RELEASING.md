@@ -3,36 +3,48 @@
 Releases are cut by tagging `main`. The tag triggers `.github/workflows/release.yml`:
 
 ```
-test -> build -> publish -> confirm -> attest -> github-release
+test -> source -> build -> package -> independent rebuild -> reconcile -> publish -> confirm -> attest -> github-release
 ```
 
 - **test** — RuboCop + the full suite (coverage thresholds enforced).
+- **source** — validates the version and annotated release tag without running
+  repository code, then emits immutable, SHA-256-addressed release helpers and
+  the reviewed release notes.
 - **build** — unprivileged job that builds the gem with an exactly pinned
   toolchain (Ruby + RubyGems versions in `release.yml`; `SOURCE_DATE_EPOCH`
-  from the commit, so identical source produces identical bytes), verifies the
-  package (`script/release/verify_package.rb`), and emits the artifact plus its
-  SHA-256. Artifact identity flows forward **by digest**: every later job
-  re-downloads the artifact and asserts that digest before acting.
+  from the commit, so identical source produces identical bytes) and uploads
+  the candidate. It does not supply its own verification result.
+- **package** — a fresh runner downloads the immutable build artifact, records
+  its digest before executing package code, verifies the raw archive, source
+  bytes/modes, isolated installation, and installed-byte suite, then rechecks
+  the original path. This job's digest is the identity every authority-bearing
+  job must consume.
+- **rebuild** — a second fresh runner must reproduce the verified package
+  digest and pass the same package verifier.
+- **reconcile** — an unprivileged, credential-free registry state machine; its
+  downloaded scripts are checked against the source-manifest digests before
+  execution.
 - **publish** — the only job that can mint RubyGems credentials, gated by the
   `release-rubygems` environment (required reviewer: Jeremy) and OIDC trusted
   publishing. No checkout and no artifact-delivered executable code: only the
-  `.gem` enters this job. Before pushing it reconciles with the registry using
-  workflow-owned `curl`/`jq` — a total state machine: version absent → push;
-  already published with exactly our bytes → skip (idempotent re-run);
-  anything else → fail closed. It verifies the gem digest again immediately
-  before `gem push`. Credentials are scrubbed unconditionally (`if: always()`),
-  even when the push fails.
+  `.gem` enters this job. It has no checkout, Ruby setup, installer, downloaded
+  script, or arbitrary executable download and uses the hosted `gem` command
+  only for `gem push`. If trusted-publishing credentials were configured, the
+  action-created credentials file is removed on success or failure; this is not
+  a claim that arbitrary process state can be scrubbed.
 - **confirm** — deliberately credential-free (`permissions: {}`): polls the
   registry until it reports exactly our version with exactly our digest, then
-  downloads the canonical bytes from RubyGems and asserts their digest equals
-  the artifact digest.
+  downloads and atomically saves the canonical bytes from RubyGems, asserts
+  their digest, and uploads them as `canonical-gem`.
 - **attest** — attests SLSA build provenance for the canonical,
   registry-confirmed bytes only.
-- **github-release** — creates the GitHub Release with the exact `.gem`
-  attached (`fail_on_unmatched_files: true`).
+- **github-release** — independently rechecks the canonical digest and tag SHA,
+  disables asset overwrite, uses the verified commit as `target_commitish`,
+  and publishes only the reviewed, digest-checked release notes.
 
 `workflow_dispatch` on `release.yml` is always a **no-publish rehearsal**:
-test → build only. No environment prompt, no credentials, no attestation.
+test → source → build → package → independent rebuild only. No environment
+prompt, credentials, registry reconciliation, attestation, or release creation.
 Rehearse before every first-of-its-kind release.
 
 ## Cutting a release
@@ -45,19 +57,34 @@ Rehearse before every first-of-its-kind release.
    publisher **immediately before tagging** (pending publishers expire after
    ~12 hours) — see one-time setup below.
 3. On an up-to-date `main` checkout: `rake tag`. Guards: clean tree, on
-   `main`, HEAD == `origin/main` after fetch, tag absent locally and remotely.
-   It pushes `main` first, then the tag.
+   `main`, HEAD == the fetched canonical push URL, and the remote tag absent.
+   Retry is allowed only for an exact annotated local tag that peels to HEAD.
 4. Approve the `release-rubygems` environment when the run pauses.
 5. Watch the run to completion. Verify afterwards:
    - digest equality across the RubyGems download, the GitHub Release asset,
      and the attestation subject;
-   - `gh attestation verify surfguard-X.Y.Z.gem --signer-workflow basecamp/surfguard/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z` —
-     constrain by signer workflow **and** source ref, not just `--repo`.
-     (A release finished by the recovery workflow is signed by it instead:
-     use `--signer-workflow basecamp/surfguard/.github/workflows/release-recovery.yml`,
-     with `--source-ref refs/tags/vX.Y.Z` when recovery was dispatched on the
-     tag — the preferred mode — or `--source-ref refs/heads/main` when it had
-     to be dispatched on `main`.)
+   - constrain attestation verification by repository, signer workflow,
+     **and** source ref:
+
+     ```sh
+     gh attestation verify surfguard-X.Y.Z.gem \
+       --repo basecamp/surfguard \
+       --signer-workflow basecamp/surfguard/.github/workflows/release.yml \
+       --source-ref refs/tags/vX.Y.Z
+     ```
+
+     A release finished by recovery is signed by that workflow instead:
+
+     ```sh
+     gh attestation verify surfguard-X.Y.Z.gem \
+       --repo basecamp/surfguard \
+       --signer-workflow basecamp/surfguard/.github/workflows/release-recovery.yml \
+       --source-ref refs/tags/vX.Y.Z
+     ```
+
+     Use `--source-ref refs/heads/main` only when recovery had to be dispatched
+     on `main`. The GitHub CLI requires `--repo` or `--owner`; the signer
+     constraints do not replace it.
 6. **First release only:** verify durable ownership on RubyGems — the gem
    sits under the RubyGems `basecamp` organization / the correct owner
    accounts with MFA enforced — before announcing.
@@ -78,7 +105,7 @@ any conflict. Recovery rules, by failure state:
 
 | State | Recovery |
 |---|---|
-| Failure before `gem push` ran (test/build/reconciliation) | Fix on `main`; delete the unpublished tag; re-tag. Allowed **only** because nothing was published. Tag deletion has **no standing bypass** — an admin must temporarily lift the `release-tags-immutable` ruleset, delete, and re-enable it. That friction is deliberate. |
+| Failure before `gem push` ran (test/source/build/package/rebuild/reconciliation) | Fix on `main`; delete the unpublished tag; re-tag. Allowed **only** because nothing was published. Tag deletion has **no standing bypass** — an admin must temporarily lift the `release-tags-immutable` ruleset, delete, and re-enable it. That friction is deliberate. |
 | Push succeeded; confirm/attest/release failed | Re-run the same run/tag. Reconciliation sees same-SHA → skips the push; downstream completes idempotently. |
 | **Ambiguous push result** (push errored/timed out; registry state unknown) | Never use a later 404 to justify deleting or moving the tag. Poll, then **download the canonical RubyGems bytes and compare digests**. Match → re-run the same tag to finish. Absent after bounded polling → re-run the same tag (reconciliation decides). Indeterminate/conflicting → **stop; contact RubyGems support**. |
 | Workflow defect embedded in a published tag | Re-runs use the tagged workflow; fixing `main` doesn't fix the tag. Never move/delete the tag. Run `release-recovery.yml` (dispatch with the version) to finish attestation + the GitHub Release from verified canonical registry bytes; ship the workflow fix in the next version. |
@@ -86,15 +113,17 @@ any conflict. Recovery rules, by failure state:
 
 `release-recovery.yml` never publishes and never mints RubyGems credentials.
 It mirrors the release pipeline's privilege separation: an **unprivileged
-`verify` job** proves the `vX.Y.Z` tag exists on `main` (so a typo can never
-attest an arbitrary registry version or mint a fresh tag at the
-default-branch tip), extracts the tagged source to the side with
-`git archive` (the recovery helpers keep running from the dispatch revision,
-not the possibly-defective tag), **rebuilds the gem with the tag's own
-toolchain pins**, and requires the rebuilt digest to equal the canonical
-RubyGems digest. Only then does the **reviewer-gated `finish` job**
-(`release-recovery` environment, same reviewer as publishing, no checkout)
-attest and create the GitHub Release from the canonical bytes. That digest
+`rebuild` job** proves the `vX.Y.Z` tag exists on `main` (so a typo can never
+attest an arbitrary registry version or mint a fresh tag at the default-branch
+tip), extracts the tagged source to the side with `git archive`, and rebuilds
+the gem with the tag's own toolchain pins. A separate fresh **`verify` job**
+revalidates the immutable tag, downloads and uploads the canonical RubyGems
+bytes before executing tagged package code, then verifies the immutable
+rebuild artifact against the tagged source and requires rebuilt == canonical.
+Only then do separate reviewer-gated jobs independently recheck the canonical
+digest: `attest` has only OIDC/attestation authority, and `github-release` has
+only `contents: write` and immediately re-reads the tag before creating the
+Release. That digest
 equality is what makes the recovery attestation honest: the attested bytes
 are demonstrably the product of the tagged source, not merely whatever the
 registry served. A mismatch stops the workflow for a human.
@@ -124,8 +153,9 @@ repository-owned workflow or ruleset.
 
 ## One-time setup
 
-Idempotent payloads, each **read back** to assert the declared invariant.
-Replace IDs where noted.
+Setup payloads, each **read back** to assert the declared invariant. Creation
+calls are one-time operations and can report an already-existing resource when
+repeated. Replace IDs where noted.
 
 1. **Workflow token defaults** — read-only token, bot approvals enabled
    (required for zero-touch Dependabot automation), and the repository's
@@ -171,8 +201,34 @@ Replace IDs where noted.
    `can_admins_bypass: false` as above, with deployment branch policies for
    both `main` (branch type) and `v*` (tag type): recovery is preferably
    dispatched on the release tag (binding provenance to it) and falls back
-   to `main`. Gates `release-recovery.yml`'s attestation + Release
-   permissions behind the same human as publishing.
+   to `main`. This environment gates only the recovery `attest` job's
+   OIDC/attestation authority.
+
+3b. **Environment `github-release`** — same reviewer,
+   `prevent_self_review: false`, and `can_admins_bypass: false`, also with
+   `main` (branch) and `v*` (tag) deployment policies. This distinct
+   environment gates the `contents: write` GitHub Release job in both normal
+   and recovery workflows. Configure and read back both environments before
+   either workflow references them:
+
+   ```sh
+   reviewer_id=$(gh api users/jeremy --jq .id)
+   for environment in release-recovery github-release; do
+     gh api -X PUT "repos/basecamp/surfguard/environments/${environment}" \
+       --input - <<JSON
+   { "reviewers": [{ "type": "User", "id": ${reviewer_id} }],
+     "prevent_self_review": false,
+     "can_admins_bypass": false,
+     "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
+   JSON
+     gh api -X POST "repos/basecamp/surfguard/environments/${environment}/deployment-branch-policies" \
+       -f name=main -f type=branch
+     gh api -X POST "repos/basecamp/surfguard/environments/${environment}/deployment-branch-policies" \
+       -f name='v*' -f type=tag
+     gh api "repos/basecamp/surfguard/environments/${environment}"
+     gh api "repos/basecamp/surfguard/environments/${environment}/deployment-branch-policies"
+   done
+   ```
 
 4. **Tag rulesets** — two separate rulesets on `refs/tags/v*`, enforcement
    `active`: (a) creation restricted, bypass_actors = the release team only
@@ -202,26 +258,48 @@ Replace IDs where noted.
 
 9. **Dependency graph** — confirm enabled (Settings → Security).
 
-10. **RubyGems trusted publisher** — **immediately before v0.1.0** (pending
+10. **RubyGems trusted publisher** — **immediately before a release** (pending
     publishers expire ~12h): create/verify the pending trusted publisher for
     gem `surfguard`: owner `basecamp`, repository `surfguard`, workflow
     `release.yml`, environment `release-rubygems`. A v1 API 404 for the gem
     name is **never** treated as proof the name is unclaimed. **After first
     publication**: move/verify ownership under the RubyGems `basecamp`
-    organization with MFA enforced, before announcing.
+    organization with MFA enforced, before announcing. Save the owner/MFA and
+    trusted-publisher readback with the release evidence. For 0.2.0 that
+    evidence remains pending because this implementation does not publish.
+
+## 0.2.0 control readback (2026-08-17)
+
+Before either workflow referenced it, `github-release` was created and read
+back with sole reviewer `jeremy` (numeric id 199), self-review allowed,
+`can_admins_bypass: false`, and deployment policies `v*` (tag) plus `main`
+(branch). The unused `copilot` environment was verified to have no protection
+rules and deleted; readback lists only `github-release`, `release-recovery`,
+and `release-rubygems`.
+
+Repository Actions were changed from unrestricted to selected repositories
+and read back with full-SHA pinning required, GitHub-owned/verified blanket
+allowances disabled, and only repositories referenced by checked-in workflows
+allowed. RubyGems owner/MFA and trusted-publisher evidence is still a mandatory
+manual pre-tag gate. No tag or publication was performed.
 
 ## Dependabot automation
 
-`dependabot-auto-merge.yml` auto-approves and auto-merges **Bundler
-patch/minor** updates only, via a constrained `pull_request_target` workflow
+`dependabot-auto-merge.yml` auto-approves and auto-merges **lockfile-only,
+single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request_target` workflow
 that never checks out or executes PR-controlled code. Everything else —
 bundler major, all github-actions updates — is human-gated. The approval is
-created through the API pinned to the validated head commit, the merge is
-pinned with `--match-head-commit`, and a human push to a Dependabot PR
-triggers a revoke job that disables any pending auto-merge (the
-dismiss-stale-reviews branch rule retracts the bot approval at the same
-time). CODEOWNERS pairs a blanket `* @jeremy` rule with an ownerless
-`/Gemfile.lock` override: every path requires code-owner review except the
-lockfile, so lockfile-only Dependabot PRs don't deadlock on code-owner
-review while any PR touching anything else stays human-gated; the required
+created through the API pinned to the validated head commit, and the merge is
+pinned with `--match-head-commit`. Automation requires an open, non-draft PR
+authored by Dependabot, a same-repository Dependabot head, and a base in this
+repository's protected `main`. The current base/head identity and every
+commit's Dependabot author, committer, and verified signature are checked
+again immediately before approval and immediately before merge enablement. A
+human push to a Dependabot PR triggers a revoke job that disables any pending
+auto-merge (the dismiss-stale-reviews branch rule retracts the bot approval at
+the same time). The trusted-base validator and base/head lockfiles are fetched
+through the API at exact SHAs; PR code is never checked out. Source, structure,
+prerelease, major, transitive, grouped, ambiguous, added, or removed changes
+require human review. CODEOWNERS uses an ownerless trailing `/Gemfile.lock` pattern to remove
+lockfile ownership while its catch-all protects every other path; the required
 `CI` check still gates every merge.

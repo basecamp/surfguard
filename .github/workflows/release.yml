@@ -1,13 +1,5 @@
 name: Release
 
-# Tag push (v*) runs the full pipeline: test -> build -> publish -> confirm ->
-# attest -> github-release. workflow_dispatch is always a no-publish rehearsal:
-# test -> build only, no environment prompt, no credentials, no attestation.
-#
-# Artifact identity flows forward by digest: build emits the gem's SHA-256 as a
-# job output, and every downstream job re-downloads the artifact and asserts
-# that digest before acting. Only canonical, registry-confirmed bytes are ever
-# attested or attached to the GitHub Release.
 on:
   push:
     tags: [ "v*" ]
@@ -15,352 +7,395 @@ on:
 
 permissions: {}
 
-# GitHub retains only ONE pending run per concurrency group. Rapid successive
-# release tags are prohibited — cut one release at a time, or the middle run
-# gets silently dropped.
+# GitHub retains one pending run in this group. A newer pending release can
+# replace an older pending run, so releases are cut one at a time.
 concurrency:
   group: release-publishing
   cancel-in-progress: false
 
 env:
-  # The packaging toolchain is pinned exactly: identical source must produce
-  # identical bytes, and RubyGems version changes change gem digests.
   RUBY_VERSION: "3.4.10"
   RUBYGEMS_VERSION: "4.0.18"
+  RUBYGEMS_UPDATE_SHA256: "a6a8653069b81b7977d4d341b3ba9f0212f14aa9756f0143dca2dcc3e793db97"
 
 jobs:
   test:
-    name: Test and lint
+    name: Test, lint, and registry drift
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # zizmor: ignore[cache-poisoning,ref-version-mismatch] -- pinned at v1.321.0; this test job only lints and runs the suite, and the artifact is built in the separate build job with bundler-cache disabled, so a poisoned bundler cache cannot reach the packaged bytes
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
-          bundler-cache: true
+          bundler-cache: false
+      - run: ruby script/check_resolv_version.rb
+      - run: bundle install --jobs 4 --retry 3
+      - run: bundle exec ruby script/check_resolv_version.rb
       - run: bundle exec rubocop
       - run: bundle exec rake test
         env:
           COVERAGE: "1"
+      - run: ruby script/generate_iana_data.rb --check
+      - run: ruby script/check_iana_drift.rb
 
-  # Executes the repo-controlled gemspec, so it deliberately holds no
-  # credentials and no privileged permissions.
-  build:
-    name: Build and verify the gem
+  source:
+    name: Capture immutable source inputs
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
+      version: ${{ steps.manifest.outputs.version }}
+      commit_sha: ${{ steps.manifest.outputs.commit_sha }}
+      prerelease: ${{ steps.manifest.outputs.prerelease }}
+      registry_sha256: ${{ steps.manifest.outputs.registry_sha256 }}
+      check_sha256: ${{ steps.manifest.outputs.check_sha256 }}
+      confirm_sha256: ${{ steps.manifest.outputs.confirm_sha256 }}
+      surfguard_sha256: ${{ steps.manifest.outputs.surfguard_sha256 }}
+      version_sha256: ${{ steps.manifest.outputs.version_sha256 }}
+      notes_sha256: ${{ steps.manifest.outputs.notes_sha256 }}
+    steps:
+      # This job deliberately runs no repository code. It is the trusted
+      # producer for release helpers and human-authored release notes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and capture source manifest
+        id: manifest
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^  VERSION = "\([^"]*\)"$/\1/p' lib/surfguard/version.rb)"
+          if ! printf '%s' "$version" | grep --extended-regexp --quiet '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::Repository version must be exact SemVer X.Y.Z"
+            exit 1
+          fi
+          [ "$(grep --count '^  VERSION = ' lib/surfguard/version.rb)" -eq 1 ]
+          commit_sha="$(git rev-parse HEAD)"
+          if ! printf '%s' "$commit_sha" | grep --extended-regexp --quiet '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+            echo "::error::Source commit is not a full object ID"
+            exit 1
+          fi
+          [ "$(git cat-file -t "$commit_sha")" = commit ]
+          if [ "$EVENT_NAME" = push ]; then
+            [ "v${version}" = "$REF_NAME" ]
+            [ "$(git cat-file -t "refs/tags/${REF_NAME}")" = tag ]
+            [ "$(git for-each-ref --format='%(contents:subject)' "refs/tags/${REF_NAME}")" = "surfguard ${REF_NAME}" ]
+            [ -z "$(git for-each-ref --format='%(contents:body)' "refs/tags/${REF_NAME}")" ]
+            [ "$(git rev-parse "refs/tags/${REF_NAME}^{commit}")" = "$commit_sha" ]
+            git merge-base --is-ancestor "$commit_sha" origin/main
+          fi
+          notes="RELEASE_NOTES_${version}.md"
+          [ -f "$notes" ] && [ ! -L "$notes" ]
+          {
+            echo "version=${version}"
+            echo "commit_sha=${commit_sha}"
+            echo "prerelease=false"
+            echo "registry_sha256=$(sha256sum script/release/registry.rb | awk '{print $1}')"
+            echo "check_sha256=$(sha256sum script/release/registry_check.rb | awk '{print $1}')"
+            echo "confirm_sha256=$(sha256sum script/release/registry_confirm.rb | awk '{print $1}')"
+            echo "surfguard_sha256=$(sha256sum lib/surfguard.rb | awk '{print $1}')"
+            echo "version_sha256=$(sha256sum lib/surfguard/version.rb | awk '{print $1}')"
+            echo "notes_sha256=$(sha256sum "$notes" | awk '{print $1}')"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-scripts
+          path: |
+            script/release/registry.rb
+            script/release/registry_check.rb
+            script/release/registry_confirm.rb
+            lib/surfguard.rb
+            lib/surfguard/version.rb
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes
+          path: RELEASE_NOTES_${{ steps.manifest.outputs.version }}.md
+          if-no-files-found: error
+
+  build:
+    name: Build candidate gem
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: false
+      - name: Install byte-pinned RubyGems toolchain # zizmor: ignore[adhoc-packages] -- unprivileged build job verifies the exact rubygems-update gem SHA-256 before local installation
+        run: |
+          gem fetch rubygems-update --version "$RUBYGEMS_VERSION" --clear-sources --source https://rubygems.org
+          echo "$RUBYGEMS_UPDATE_SHA256  rubygems-update-${RUBYGEMS_VERSION}.gem" | sha256sum --check
+          gem install --local --no-document "rubygems-update-${RUBYGEMS_VERSION}.gem"
+          update_rubygems --no-document
+          [ "$(gem --version)" = "$RUBYGEMS_VERSION" ]
+      - name: Reproducibly build candidate
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          bundle install --jobs 4 --retry 3
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" gem build --strict surfguard.gemspec
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rubygem
+          path: surfguard-${{ needs.source.outputs.version }}.gem
+          if-no-files-found: error
+
+  package:
+    name: Fresh-runner package verification
+    needs: [ source, build ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
       gem_sha256: ${{ steps.digest.outputs.gem_sha256 }}
+    steps:
+      # Nothing before download evaluates the gemspec or candidate package.
+      # The build artifact is immutable once uploaded, so code exercised by
+      # the installed suite cannot swap the bytes later consumed by publish.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rubygem
+      - name: Capture immutable artifact digest
+        id: digest
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: echo "gem_sha256=$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: Verify immutable candidate against source and installed bytes
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+          EXPECTED_DIGEST: ${{ steps.digest.outputs.gem_sha256 }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit_sha }}
+        run: |
+          ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION" "$SOURCE_COMMIT"
+          [ "$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')" = "$EXPECTED_DIGEST" ]
+
+  rebuild:
+    name: Independent fresh-runner rebuild
+    needs: [ source, package ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Require the tagged commit to be on origin/main
-        if: github.event_name == 'push'
-        run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::Tagged commit ${GITHUB_SHA} is not an ancestor of origin/main"
-            exit 1
-          fi
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
-      - name: Pin the packaging toolchain
+      - name: Install the same byte-pinned RubyGems toolchain # zizmor: ignore[adhoc-packages] -- unprivileged rebuild verifies the exact rubygems-update gem SHA-256 before local installation
         run: |
-          gem update --system "$RUBYGEMS_VERSION"
-          gem --version
-      - name: Determine the version (tag must match Surfguard::VERSION on tag pushes)
-        id: version
+          gem fetch rubygems-update --version "$RUBYGEMS_VERSION" --clear-sources --source https://rubygems.org
+          echo "$RUBYGEMS_UPDATE_SHA256  rubygems-update-${RUBYGEMS_VERSION}.gem" | sha256sum --check
+          gem install --local --no-document "rubygems-update-${RUBYGEMS_VERSION}.gem"
+          update_rubygems --no-document
+          [ "$(gem --version)" = "$RUBYGEMS_VERSION" ]
+      - name: Rebuild, verify, and require digest equality
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.source.outputs.version }}
+          EXPECTED: ${{ needs.package.outputs.gem_sha256 }}
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit_sha }}
         run: |
-          version="$(ruby -Ilib -rsurfguard/version -e 'puts Surfguard::VERSION')"
-          if [ "$EVENT_NAME" = "push" ] && [ "v${version}" != "$REF_NAME" ]; then
-            echo "::error::Tag ${REF_NAME} does not match Surfguard::VERSION ${version}"
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          # RubyGems prerelease semantics (letter-bearing versions like
-          # 0.2.0.rc1), not a naive hyphen check.
-          prerelease="$(ruby -e 'puts Gem::Version.new(ARGV[0]).prerelease?' "$version")"
-          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
-      - name: Build the gem (reproducibly — timestamps come from the commit)
-        run: |
+          bundle install --jobs 4 --retry 3
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" gem build --strict surfguard.gemspec
-      - name: Verify the packaged gem (rehearsals included)
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION" "$(git rev-parse HEAD)"
-      - name: Record the artifact digest
-        id: digest
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          gem_sha256="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          echo "gem_sha256=${gem_sha256}" >> "$GITHUB_OUTPUT"
-          echo "surfguard-${VERSION}.gem sha256=${gem_sha256}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: rubygem
-          path: surfguard-${{ steps.version.outputs.version }}.gem
-          if-no-files-found: error
-      # The unprivileged confirm job runs these scripts without checking out
-      # the repo, so the artifact carries the Surfguard library registry.rb
-      # loads for address classification, laid out at repo-relative paths.
-      # The OIDC-capable publish job deliberately does not download or
-      # execute them.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION" "$SOURCE_COMMIT"
+          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')"
+          [ "$actual" = "$EXPECTED" ]
+
+  reconcile:
+    name: Unprivileged registry reconciliation
+    if: github.event_name == 'push'
+    needs: [ source, package, rebuild ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions: {}
+    outputs:
+      decision: ${{ steps.check.outputs.decision }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-scripts
-          path: |
-            lib/surfguard.rb
-            lib/surfguard/version.rb
-            script/release/registry.rb
-            script/release/registry_confirm.rb
-          if-no-files-found: error
+      - name: Verify scripts before execution
+        env:
+          REGISTRY_SHA: ${{ needs.source.outputs.registry_sha256 }}
+          CHECK_SHA: ${{ needs.source.outputs.check_sha256 }}
+          SURFGUARD_SHA: ${{ needs.source.outputs.surfguard_sha256 }}
+          VERSION_SHA: ${{ needs.source.outputs.version_sha256 }}
+        run: |
+          [ "$(sha256sum script/release/registry.rb | awk '{print $1}')" = "$REGISTRY_SHA" ]
+          [ "$(sha256sum script/release/registry_check.rb | awk '{print $1}')" = "$CHECK_SHA" ]
+          [ "$(sha256sum lib/surfguard.rb | awk '{print $1}')" = "$SURFGUARD_SHA" ]
+          [ "$(sha256sum lib/surfguard/version.rb | awk '{print $1}')" = "$VERSION_SHA" ]
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: false
+      - id: check
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+          GEM_SHA: ${{ needs.package.outputs.gem_sha256 }}
+        run: echo "decision=$(ruby script/release/registry_check.rb surfguard "$VERSION" "$GEM_SHA" 300)" >> "$GITHUB_OUTPUT"
 
-  # The only job that can mint RubyGems credentials. Gated by the
-  # release-rubygems environment (required reviewer + OIDC trusted publishing).
-  # No checkout and no build-produced executable code: only the .gem artifact
-  # enters this job. Registry reconciliation is workflow-owned shell below.
   publish:
-    name: Publish to RubyGems
+    name: Publish with hosted RubyGems
     if: github.event_name == 'push'
-    needs: build
+    needs: [ source, package, reconcile ]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: release-rubygems
     permissions:
-      id-token: write # OIDC token exchange for RubyGems trusted publishing; nothing else
+      id-token: write # RubyGems trusted publishing exchanges this OIDC token
     env:
-      VERSION: ${{ needs.build.outputs.version }}
-      GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+      VERSION: ${{ needs.source.outputs.version }}
+      GEM_SHA: ${{ needs.package.outputs.gem_sha256 }}
     steps:
-      - name: Validate unprivileged build outputs against the release ref
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          if [[ ! "$VERSION" =~ ^[0-9]+(\.[A-Za-z0-9]+)*$ ]]; then
-            echo "::error::Build output is not a plausible gem version"
-            exit 1
-          fi
-          if [ "v${VERSION}" != "$REF_NAME" ]; then
-            echo "::error::Build output version ${VERSION} does not match release ref ${REF_NAME}"
-            exit 1
-          fi
-          if [[ ! "$GEM_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "::error::Build output is not a lowercase SHA-256 digest"
-            exit 1
-          fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rubygem
-      - name: Verify artifact identity (digest must match the build job's)
+      - name: Verify artifact identity
+        run: '[ "$(sha256sum "surfguard-${VERSION}.gem" | awk ''{print $1}'')" = "$GEM_SHA" ]'
+      - uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+        if: needs.reconcile.outputs.decision == 'push'
+      - name: Push using only the hosted runner gem command
+        if: needs.reconcile.outputs.decision == 'push'
         run: |
-          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          if [ "$actual" != "$GEM_SHA256" ]; then
-            echo "::error::Artifact digest ${actual} does not match build output ${GEM_SHA256}"
-            exit 1
-          fi
-      - name: Reconcile with the registry (total state machine; fails closed)
-        id: reconcile
-        run: |
-          registry_url="https://rubygems.org/api/v2/rubygems/surfguard/versions/${VERSION}.json"
-          response_body="$(mktemp)"
-          trap 'rm -f "$response_body"' EXIT
-
-          attempt=1
-          while [ "$attempt" -le 5 ]; do
-            : > "$response_body"
-            status=""
-            retry_reason=""
-
-            if status="$(curl --disable --silent --show-error \
-              --connect-timeout 10 \
-              --max-time 40 \
-              --proto '=https' \
-              --output "$response_body" \
-              --write-out '%{http_code}' \
-              "$registry_url")"; then
-              case "$status" in
-                200)
-                  if ! published_version="$(jq --exit-status --raw-output \
-                    '.number | select(type == "string")' "$response_body")"; then
-                    echo "::error::RubyGems returned malformed version metadata"
-                    exit 1
-                  fi
-                  if ! published_sha="$(jq --exit-status --raw-output \
-                    '.sha | strings | select(test("^[0-9A-Fa-f]{64}$")) | ascii_downcase' \
-                    "$response_body")"; then
-                    echo "::error::RubyGems returned malformed digest metadata"
-                    exit 1
-                  fi
-                  if [ "$published_version" != "$VERSION" ]; then
-                    echo "::error::RubyGems returned metadata for a different version; expected ${VERSION}"
-                    exit 1
-                  fi
-                  if [ "$published_sha" != "$GEM_SHA256" ]; then
-                    echo "::error::surfguard ${VERSION} is already published with sha256 ${published_sha}; our artifact is ${GEM_SHA256}"
-                    exit 1
-                  fi
-                  decision="skip"
-                  break
-                  ;;
-                404)
-                  decision="push"
-                  break
-                  ;;
-                429|5??)
-                  retry_reason="HTTP ${status}"
-                  ;;
-                *)
-                  echo "::error::Unexpected HTTP ${status} from ${registry_url}"
-                  exit 1
-                  ;;
-              esac
-            else
-              retry_reason="network failure"
-            fi
-
-            if [ "$attempt" -ge 5 ]; then
-              echo "::error::RubyGems unavailable after ${attempt} attempts (${retry_reason})"
-              exit 1
-            fi
-            sleep "$((2 * attempt))"
-            attempt="$((attempt + 1))"
-          done
-
-          echo "decision=${decision}" >> "$GITHUB_OUTPUT"
-          echo "registry decision: ${decision}"
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        if: steps.reconcile.outputs.decision == 'push'
-        with:
-          ruby-version: ${{ env.RUBY_VERSION }}
-          bundler-cache: false
-      - name: Pin the packaging toolchain (same pins as build)
-        if: steps.reconcile.outputs.decision == 'push'
-        run: gem update --system "$RUBYGEMS_VERSION"
-      - name: Configure RubyGems trusted-publishing credentials (OIDC)
-        if: steps.reconcile.outputs.decision == 'push'
-        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
-      - name: Re-verify artifact identity and push the gem
-        if: steps.reconcile.outputs.decision == 'push'
-        run: |
-          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          if [ "$actual" != "$GEM_SHA256" ]; then
-            echo "::error::Artifact digest ${actual} changed after reconciliation; expected ${GEM_SHA256}"
-            exit 1
-          fi
+          [ "$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')" = "$GEM_SHA" ]
           gem push "surfguard-${VERSION}.gem"
-      - name: Scrub credentials (runs even when the push fails)
-        if: always()
-        run: |
-          rm -f ~/.gem/credentials
-          {
-            echo "RUBYGEMS_API_KEY="
-            echo "BUNDLE_GEM__PUSH_KEY="
-            echo "GEM_HOST_API_KEY="
-          } >> "$GITHUB_ENV"
+      - name: Remove credentials created by the trusted-publishing action
+        if: always() && needs.reconcile.outputs.decision == 'push'
+        run: ruby -e 'path = File.expand_path("~/.gem/credentials"); File.delete(path) if File.file?(path) && !File.symlink?(path)'
 
-  # Registry confirmation deliberately lives OUTSIDE the credentialed job: no
-  # OIDC, no credentials, no checkout — just the public registry and math.
   confirm:
-    name: Confirm publication
+    name: Confirm and capture canonical registry bytes
     if: github.event_name == 'push'
-    needs: [ build, publish ]
+    needs: [ source, package, publish ]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: {}
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
-      GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: rubygem
-      # Spanning lib/ and script/, the artifact is rooted at the repo root:
-      # extracting into the workspace restores both trees in place.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-scripts
-      - name: Verify artifact identity (digest must match the build job's)
+      - name: Verify release scripts before execution
+        env:
+          REGISTRY_SHA: ${{ needs.source.outputs.registry_sha256 }}
+          CONFIRM_SHA: ${{ needs.source.outputs.confirm_sha256 }}
+          SURFGUARD_SHA: ${{ needs.source.outputs.surfguard_sha256 }}
+          VERSION_SHA: ${{ needs.source.outputs.version_sha256 }}
         run: |
-          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          if [ "$actual" != "$GEM_SHA256" ]; then
-            echo "::error::Artifact digest ${actual} does not match build output ${GEM_SHA256}"
-            exit 1
-          fi
+          [ "$(sha256sum script/release/registry.rb | awk '{print $1}')" = "$REGISTRY_SHA" ]
+          [ "$(sha256sum script/release/registry_confirm.rb | awk '{print $1}')" = "$CONFIRM_SHA" ]
+          [ "$(sha256sum lib/surfguard.rb | awk '{print $1}')" = "$SURFGUARD_SHA" ]
+          [ "$(sha256sum lib/surfguard/version.rb | awk '{print $1}')" = "$VERSION_SHA" ]
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
-      - name: Confirm the registry serves exactly our bytes
-        run: ruby script/release/registry_confirm.rb surfguard "$VERSION" "$GEM_SHA256" 300
+      - name: Save and verify canonical registry artifact
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+          GEM_SHA: ${{ needs.package.outputs.gem_sha256 }}
+        run: |
+          ruby script/release/registry_confirm.rb surfguard "$VERSION" "$GEM_SHA" "surfguard-${VERSION}.gem" 300
+          [ "$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')" = "$GEM_SHA" ]
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-gem
+          path: surfguard-${{ needs.source.outputs.version }}.gem
+          if-no-files-found: error
 
-  # Attestation happens only after the registry has confirmed publication, so
-  # only canonical bytes are ever attested. No checkout, no environment.
   attest:
-    name: Attest provenance
+    name: Attest canonical bytes
     if: github.event_name == 'push'
-    needs: [ build, confirm ]
+    needs: [ source, package, confirm ]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
-      id-token: write # Sigstore signing needs the OIDC identity
-      attestations: write # the attestation is stored via the attestations API
-      contents: read # download-artifact reads this run's artifacts
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
-      GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+      id-token: write # Sigstore signing uses the workflow OIDC identity
+      attestations: write # actions/attest stores the provenance attestation
+      artifact-metadata: write # actions/attest records the subject in artifact metadata
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rubygem
-      - name: Verify artifact identity (digest must match the build job's)
-        run: |
-          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          if [ "$actual" != "$GEM_SHA256" ]; then
-            echo "::error::Artifact digest ${actual} does not match build output ${GEM_SHA256}"
-            exit 1
-          fi
-      - name: Attest build provenance (SLSA predicate)
+          name: canonical-gem
+      - name: Independently recheck the canonical digest
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+          GEM_SHA: ${{ needs.package.outputs.gem_sha256 }}
+        run: '[ "$(sha256sum "surfguard-${VERSION}.gem" | awk ''{print $1}'')" = "$GEM_SHA" ]'
+      - 
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: surfguard-${{ needs.build.outputs.version }}.gem
+          subject-path: surfguard-${{ needs.source.outputs.version }}.gem
 
   github-release:
-    name: GitHub Release
+    name: GitHub Release from canonical bytes
     if: github.event_name == 'push'
-    needs: [ build, publish, confirm, attest ]
+    needs: [ source, package, confirm, attest ]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: github-release
     permissions:
-      contents: write # creating the release and uploading its asset writes to the repo
-    env:
-      VERSION: ${{ needs.build.outputs.version }}
-      GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+      contents: write # softprops creates the release and uploads its canonical gem asset
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: rubygem
-      - name: Verify artifact identity (digest must match the build job's)
-        run: |
-          actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"
-          if [ "$actual" != "$GEM_SHA256" ]; then
-            echo "::error::Artifact digest ${actual} does not match build output ${GEM_SHA256}"
-            exit 1
-          fi
-      - name: Create the GitHub Release with the exact gem attached
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # zizmor: ignore[superfluous-actions,ref-version-mismatch] -- pinned at v3.0.2; deliberate: fail_on_unmatched_files + generate_release_notes + prerelease handling in one reviewed, pinned action beats reimplementing them in shell
+          name: canonical-gem
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          generate_release_notes: true
-          files: surfguard-${{ needs.build.outputs.version }}.gem
+          name: release-notes
+      - name: Recheck canonical digest and release tag immediately before creation
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          EXPECTED_COMMIT: ${{ needs.source.outputs.commit_sha }}
+          EXPECTED_DIGEST: ${{ needs.package.outputs.gem_sha256 }}
+          EXPECTED_NOTES_DIGEST: ${{ needs.source.outputs.notes_sha256 }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          [ "$(sha256sum "surfguard-${VERSION}.gem" | awk '{print $1}')" = "$EXPECTED_DIGEST" ]
+          [ "$(sha256sum "RELEASE_NOTES_${VERSION}.md" | awk '{print $1}')" = "$EXPECTED_NOTES_DIGEST" ]
+          object="$(gh api "repos/${REPO}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          type="${object%% *}"; sha="${object#* }"
+          if [ "$type" = tag ]; then object="$(gh api "repos/${REPO}/git/tags/${sha}" --jq '.object.type + " " + .object.sha')"; type="${object%% *}"; sha="${object#* }"; fi
+          [ "$type" = commit ] && [ "$sha" = "$EXPECTED_COMMIT" ]
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+      - name: Create the GitHub Release from the canonical bytes # zizmor: ignore[superfluous-actions] -- the pinned action provides fail-on-unmatched-files, reviewed release-note handling, prerelease handling, target_commitish, and overwrite control as one operation
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ steps.tag.outputs.sha }}
+          body_path: RELEASE_NOTES_${{ needs.source.outputs.version }}.md
+          files: surfguard-${{ needs.source.outputs.version }}.gem
           fail_on_unmatched_files: true
-          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
+          overwrite_files: false
+          prerelease: ${{ needs.source.outputs.prerelease == 'true' }}
