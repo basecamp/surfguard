@@ -1,11 +1,2 @@
-# Release- and security-sensitive paths require Jeremy's review. Deliberately
-# scoped — no `*` rule and no Gemfile.lock rule — so Dependabot's bundler
-# lockfile PRs don't deadlock on code-owner review. Tests remain gated by the
-# >= 1 approving review rule plus the required CI check.
-/.github/            @jeremy
-/lib/                @jeremy
-/Rakefile            @jeremy
-/surfguard.gemspec   @jeremy
-/Gemfile             @jeremy
-/RELEASING.md        @jeremy
-/script/release/     @jeremy
+* @jeremy
+/Gemfile.lock

@@ -21,10 +21,11 @@ concurrency:
 jobs:
   metadata:
     name: Dependabot metadata
-    if: github.actor == 'dependabot[bot]' && github.triggering_actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' && startsWith(github.event.pull_request.head.ref, 'dependabot/bundler/') # zizmor: ignore[bot-conditions] -- the actor checks are deliberately paired with the unspoofable pull_request.user.login check; actor + triggering_actor stop a human-triggered event from re-entering this path
+    if: github.actor == 'dependabot[bot]' && github.triggering_actor == 'dependabot[bot]' && github.event.pull_request.state == 'open' && github.event.pull_request.draft == false && github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'dependabot/bundler/') # zizmor: ignore[bot-conditions] -- actor + triggering_actor are paired with GitHub-owned PR identity, protected-main base, and same-repository head checks; the privileged job repeats these checks through the API
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read # fetch-metadata only reads the PR
+    timeout-minutes: 10
     outputs:
       update-type: ${{ steps.metadata.outputs.update-type }}
       package-ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}
@@ -51,8 +52,10 @@ jobs:
     permissions:
       contents: write # gh pr merge --auto needs the merge permission
       pull-requests: write # gh pr review --approve and auto-merge state
+    timeout-minutes: 10
     steps:
       - name: Re-validate the PR via the API (nothing checked out, nothing executed)
+        id: validation
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -60,6 +63,8 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_ACTOR: ${{ github.actor }}
           EVENT_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          METADATA_ECOSYSTEM: ${{ needs.metadata.outputs.package-ecosystem }}
+          METADATA_UPDATE_TYPE: ${{ needs.metadata.outputs.update-type }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
 
@@ -67,11 +72,18 @@ jobs:
           [ "$EVENT_TRIGGERING_ACTOR" = "dependabot[bot]" ] || fail "triggering actor is ${EVENT_TRIGGERING_ACTOR}"
 
           pr="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+          state="$(jq -r .state <<<"$pr")"
+          draft="$(jq -r .draft <<<"$pr")"
           author="$(jq -r .user.login <<<"$pr")"
           head_ref="$(jq -r .head.ref <<<"$pr")"
           head_sha="$(jq -r .head.sha <<<"$pr")"
           head_repo="$(jq -r .head.repo.full_name <<<"$pr")"
+          base_ref="$(jq -r .base.ref <<<"$pr")"
+          base_sha="$(jq -r .base.sha <<<"$pr")"
+          base_repo="$(jq -r .base.repo.full_name <<<"$pr")"
 
+          [ "$state" = "open" ] || fail "PR state is ${state}"
+          [ "$draft" = "false" ] || fail "PR is a draft"
           [ "$author" = "dependabot[bot]" ] || fail "author is ${author}"
           case "$head_ref" in
             dependabot/bundler/*) ;;
@@ -79,28 +91,48 @@ jobs:
           esac
           # TOCTOU guard: the head we validated is the head we merge (also
           # enforced at merge time with --match-head-commit).
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || fail "head SHA is malformed"
+          [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || fail "base SHA is malformed"
           [ "$head_sha" = "$EVENT_HEAD_SHA" ] || fail "head moved: ${head_sha} != ${EVENT_HEAD_SHA}"
           # The branch must live in this repo (Dependabot's own branch, which
           # maintainers control) — fork heads are never auto-merged.
           [ "$head_repo" = "$REPO" ] || fail "head repo is ${head_repo}"
+          # The validator is executable trusted-base code. Pin its authority to
+          # this repository's protected main branch, never an editable PR base.
+          [ "$base_repo" = "$REPO" ] || fail "base repo is ${base_repo}"
+          [ "$base_ref" = "main" ] || fail "base ref is ${base_ref}"
 
-          # Changed-file allowlist: a bundler update may touch only the
-          # Gemfile and its lock.
+          # Automatic changes are lockfile-only. Gemfile changes always need
+          # human review.
           files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')"
           [ -n "$files" ] || fail "no changed files reported"
           while IFS= read -r file; do
             case "$file" in
-              Gemfile|Gemfile.lock) ;;
+              Gemfile.lock) ;;
               *) fail "unexpected changed file: ${file}" ;;
             esac
           done <<<"$files"
 
           # Every commit must be Dependabot's and signature-verified.
           commits="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate --slurp | jq 'add')"
-          jq --exit-status 'length > 0' <<<"$commits" >/dev/null || fail "no commits"
-          jq --exit-status 'all(.[]; .author.login == "dependabot[bot]" and .commit.verification.verified == true)' <<<"$commits" >/dev/null \
+          jq --exit-status --arg sha "$head_sha" '
+            length > 0 and .[-1].sha == $sha and
+            all(.[]; .author.login == "dependabot[bot]" and .committer.login == "dependabot[bot]" and .commit.verification.verified == true)
+          ' <<<"$commits" >/dev/null \
             || fail "unverified or non-Dependabot commits present"
 
+          # Fetch the validator from the trusted base and both lockfiles at
+          # exact SHAs through the API. No PR code is checked out or executed.
+          fetch_file() {
+            path="$1"; sha="$2"; destination="$3"
+            gh api "repos/${REPO}/contents/${path}?ref=${sha}" --jq .content | tr -d '\n' | base64 --decode > "$destination"
+          }
+          fetch_file .github/scripts/validate_dependabot_lockfile.rb "$base_sha" validator.rb
+          fetch_file Gemfile.lock "$base_sha" base.lock
+          fetch_file Gemfile.lock "$head_sha" head.lock
+          ruby validator.rb base.lock head.lock "$METADATA_ECOSYSTEM" "$METADATA_UPDATE_TYPE"
+
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           echo "PR #${PR_NUMBER} re-validated at ${EVENT_HEAD_SHA}"
       - name: Approve at the validated head and enable auto-merge (squash)
         env:
@@ -109,21 +141,49 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VALIDATED_BASE_SHA: ${{ steps.validation.outputs.base_sha }}
         run: |
+          fail() { echo "::error::$1"; exit 1; }
+
+          # This is called at both privilege boundaries. A stable head alone is
+          # insufficient: the PR must still be open/non-draft, authored by
+          # Dependabot, based on this repository's protected main branch, and
+          # composed entirely of current Dependabot-signed commits.
+          revalidate_current_pr() {
+            phase="$1"
+            pr="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"
+            jq --exit-status '
+                .state == "open" and .draft == false and
+                .user.login == "dependabot[bot]" and
+                (.head.ref | startswith("dependabot/bundler/"))
+              ' <<<"$pr" >/dev/null || fail "PR state or author changed ${phase}"
+            jq --exit-status \
+              --arg repo "$REPO" \
+              --arg head "$EVENT_HEAD_SHA" \
+              --arg base "$VALIDATED_BASE_SHA" '
+                .head.sha == $head and .head.repo.full_name == $repo and
+                .base.sha == $base and .base.ref == "main" and
+                .base.repo.full_name == $repo
+              ' <<<"$pr" >/dev/null || fail "PR base or head identity changed ${phase}"
+
+            commits="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate --slurp | jq 'add')"
+            jq --exit-status --arg sha "$EVENT_HEAD_SHA" '
+              length > 0 and .[-1].sha == $sha and
+              all(.[]; .author.login == "dependabot[bot]" and .committer.login == "dependabot[bot]" and .commit.verification.verified == true)
+            ' <<<"$commits" >/dev/null || fail "commit identity or signature changed ${phase}"
+          }
+
           # Narrow the validate->approve window, then pin the approval itself
           # to the validated commit via the API (gh pr review has no
           # head-binding flag). The merge is additionally pinned with
           # --match-head-commit, and the revoke job below plus the
           # dismiss-stale-reviews branch rule cover later head movement.
-          current="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .head.sha)"
-          if [ "$current" != "$EVENT_HEAD_SHA" ]; then
-            echo "::error::Head moved to ${current} after validation; refusing to approve"
-            exit 1
-          fi
+          revalidate_current_pr "before approval"
           gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
             -f commit_id="$EVENT_HEAD_SHA" \
             -f event=APPROVE \
             -f body="Auto-approving a Dependabot bundler patch/minor update at ${EVENT_HEAD_SHA}. The required CI check still gates the merge."
+          revalidate_current_pr "before merge"
           gh pr merge "$PR_URL" --auto --squash --match-head-commit "$EVENT_HEAD_SHA"
 
   # Auto-merge enablement survives pushes by users with write access, and
@@ -137,6 +197,7 @@ jobs:
     permissions:
       contents: write # disabling auto-merge requires merge authority
       pull-requests: write # auto-merge state lives on the PR
+    timeout-minutes: 10
     steps:
       - name: Disable any pending auto-merge
         env:
