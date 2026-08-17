@@ -7,358 +7,392 @@ require "uri"
 
 require_relative "surfguard/version"
 
-# One SSRF address policy for a Ruby app that fetches a URL someone else supplied.
-# It consolidates several drifting in-house copies of this policy — copies that had
-# grown four different ideas of what "internal" means, including one that decoded a
-# NAT64 prefix whose length is not recoverable from the address. This is their
-# union, decided once.
-#
-# Two policy decisions the copies drifted on, settled here and explained where
-# they live in the code:
-#
-#   * Resolver (see .resolve_public_ips): first use getaddrinfo's numeric-only
-#     parser so legacy decimal, hex, octal, and short IPv4 forms mean exactly
-#     what they do to Net::HTTP; never send those tokens to DNS. Names resolve
-#     with Resolv.getaddresses, which honours /etc/hosts and search domains AND
-#     returns every address. One copy used Resolv.getaddress (honours hosts, but
-#     only the FIRST address, so an AAAA-only host deterministically selected the
-#     IPv6 path); another used Resolv::DNS.open (all addresses, but ignores
-#     /etc/hosts, so it validated a different set than Net::HTTP would connect
-#     to). getaddresses is complete for Ruby's hosts-plus-DNS chain; system
-#     getaddrinfo may additionally consult NSS sources such as mDNS or LDAP.
-#
-#   * `no-aaaa` in Kamal `dns-opt` is NOT a mitigation. It is a glibc
-#     getaddrinfo option; every guard here resolves through pure-Ruby Resolv,
-#     which asks for AAAA regardless. IPv6 answers reach this code in production.
-#     Do not treat the deploy config as if it narrowed the input.
-#
-# THREAT MODEL / caller contract: this only resolves and classifies. It cannot
-# stop DNS rebinding on its own. A caller must PIN the connection to an address
-# this returned (Net::HTTP#ipaddr=), because a second lookup at connect time can
-# answer differently than the one that was validated. The plural API exists so
-# that a caller failing over between addresses iterates the validated list rather
-# than resolving again inside its retry loop. A non-pinning caller must instead
-# use .resolvable_public_ip?/.enforce_public_ip, which refuse unless EVERY
-# resolved address is public.
+# Resolve and classify addresses for callers that pin the selected address at
+# connection time. Surfguard deliberately does not perform HTTP requests.
 module Surfguard
   class Violation < StandardError; end
-
-  # Internal signal for something IPAddr can parse, but which is a network
-  # rather than a host. Keep it separate from a lookup failure: callers must
-  # refuse these inputs without asking DNS to reinterpret them as names.
-  class InvalidHost < ArgumentError; end
-  private_constant :InvalidHost
-
-  # The host answered with no address at all. Deliberately NOT a Violation:
-  # nothing was refused here, the lookup simply came back empty, which is
-  # usually a transient upstream failure. A caller that gives up permanently on
-  # a Violation -- a webhook deactivating a customer's endpoint, say -- must not
-  # give up the same way on this, or one bad DNS minute retires the endpoint for
-  # good. Callers that don't care can rescue both.
   class Unresolvable < StandardError; end
+
+  class InvalidInput < ArgumentError; end
+  class InvalidResolverResult < StandardError; end
+  private_constant :InvalidInput, :InvalidResolverResult
 
   extend self
 
-  # IPv4 special-use ranges and exact platform aliases that must never be a
-  # fetch target (RFC 5735/6890, plus CGNAT and benchmarking). RFC1918 /
-  # loopback / link-local are also covered by the IPAddr predicates in
-  # #disallowed_ipv4?; they are restated here so the policy is complete and
-  # auditable in one place.
-  DISALLOWED_IPV4 = [
-    IPAddr.new("0.0.0.0/8"),        # "This" network (RFC 1122)
-    IPAddr.new("10.0.0.0/8"),       # Private (RFC 1918)
-    IPAddr.new("100.64.0.0/10"),    # Carrier-grade NAT (RFC 6598)
-    IPAddr.new("127.0.0.0/8"),      # Loopback (RFC 1122)
-    IPAddr.new("168.63.129.16/32"), # Azure host-node WireServer virtual IP
-    IPAddr.new("169.254.0.0/16"),   # Link-local (RFC 3927) — includes the cloud metadata endpoint
-    IPAddr.new("172.16.0.0/12"),    # Private (RFC 1918)
-    IPAddr.new("192.0.0.0/24"),     # IETF protocol assignments (RFC 6890)
-    IPAddr.new("192.0.2.0/24"),     # TEST-NET-1 (RFC 5737)
-    IPAddr.new("192.88.99.0/24"),   # 6to4 relay anycast (RFC 7526)
-    IPAddr.new("192.168.0.0/16"),   # Private (RFC 1918)
-    IPAddr.new("198.18.0.0/15"),    # Benchmark testing (RFC 2544)
-    IPAddr.new("198.51.100.0/24"),  # TEST-NET-2 (RFC 5737)
-    IPAddr.new("203.0.113.0/24"),   # TEST-NET-3 (RFC 5737)
-    IPAddr.new("224.0.0.0/4"),      # Multicast (RFC 5771)
-    IPAddr.new("240.0.0.0/4")       # Reserved / future use (RFC 1112)
-  ].freeze
+  UNRESOLVABLE_MESSAGE = "Host could not be resolved"
+  BLOCKED_MESSAGE = "Refusing blocked address"
+  MALFORMED_MESSAGE = "Refusing malformed address"
+  MAX_HOST_BYTES = 255
+  MAX_ADDRESSES = 256
+  POLICIES = %i[default iana_special_use].freeze
 
-  # IPv6 special-use ranges beyond what private? (ULA fc00::/7, incl. the IMDSv6
-  # address fd00:ec2::254), loopback (::1) and link-local (fe80::/10) already
-  # cover. 6to4 and Teredo are deprecated transition mechanisms with no
-  # legitimate fetch target — 2002:7f00:1:: is just a 6to4 spelling of 127.0.0.1.
-  DISALLOWED_IPV6 = [
-    IPAddr.new("::/128"),           # Unspecified (RFC 4291)
-    IPAddr.new("100::/64"),         # Discard-only (RFC 6666)
-    IPAddr.new("100:0:0:1::/64"),   # Dummy IPv6 destination (RFC 9780)
-    IPAddr.new("2001::/32"),        # Teredo (RFC 4380)
-    IPAddr.new("2001:2::/48"),      # Benchmark testing (RFC 5180)
-    IPAddr.new("2001:db8::/32"),    # Documentation (RFC 3849)
-    IPAddr.new("2002::/16"),        # 6to4 (RFC 3056)
-    IPAddr.new("3fff::/20"),        # Documentation (RFC 9637)
-    IPAddr.new("5f00::/16"),        # SRv6 SIDs, confined to SR domains (RFC 9602)
-    IPAddr.new("fec0::/10"),        # Deprecated site-local (RFC 3879)
-    IPAddr.new("ff00::/8")          # Multicast (RFC 4291)
-  ].freeze
+  # iana-generator:begin IANA_ALLOCATED_IPV6_UNICAST
+  # Generated from IANA IPv6 Global Unicast Status=ALLOCATED rows.
+  # Source provenance is checked in under script/iana.
+  IANA_ALLOCATED_IPV6_UNICAST = %w[
+    2001::/23 2001:200::/23 2001:400::/23 2001:600::/23 2001:800::/22
+    2001:c00::/23 2001:e00::/23 2001:1200::/23 2001:1400::/22 2001:1800::/23
+    2001:1a00::/23 2001:1c00::/22 2001:2000::/19 2001:4000::/23 2001:4200::/23
+    2001:4400::/23 2001:4600::/23 2001:4800::/23 2001:4a00::/23 2001:4c00::/23
+    2001:5000::/20 2001:8000::/19 2001:a000::/20 2001:b000::/20 2002::/16
+    2003::/18 2400::/12 2410::/12 2600::/12 2610::/23 2620::/23 2630::/12
+    2800::/12 2a00::/12 2a10::/12 2c00::/12
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
+  # iana-generator:end IANA_ALLOCATED_IPV6_UNICAST
 
-  # The IANA parent assignment is non-source, non-destination, non-forwardable,
-  # and non-global unless a more-specific allocation says otherwise. Refuse it
-  # by default so unallocated/future-special space cannot become an internal
-  # fetch path. These are the current, narrowly scoped IP-layer services whose
-  # registrations explicitly permit globally reachable destinations without
-  # selecting nearby infrastructure. PCP, TURN, and DNS-SD SRP anycast remain
-  # refused because they deliberately target on-path or local services. ORCHID,
-  # ORCHIDv2, and DET are overlay identifiers, not ordinary IP-layer locators.
-  IETF_PROTOCOL_ASSIGNMENTS = IPAddr.new("2001::/23")
-  GLOBALLY_REACHABLE_IETF_ASSIGNMENTS = [
-    IPAddr.new("2001:3::/32"),       # AMT (RFC 7450)
-    IPAddr.new("2001:4:112::/48")    # AS112-v6 (RFC 7535)
-  ].freeze
+  DISALLOWED_IPV4 = %w[
+    0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
+    168.63.129.16/32 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24
+    192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.18.0.0/15
+    198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
 
-  # NAT64 embeds an IPv4 target that must be re-checked as IPv4. The well-known
-  # prefix is a fixed /96, so the embedded octets are always the low 32 bits:
-  # decode and re-check them, and NAT64 to a public address still resolves.
-  NAT64_WELL_KNOWN = IPAddr.new("64:ff9b::/96")   # RFC 6052
+  DISALLOWED_IPV6 = %w[
+    ::/128 100::/64 100:0:0:1::/64 2001::/32 2001:2::/48
+    2001:db8::/32 2002::/16 3fff::/20 5f00::/16 fec0::/10 ff00::/8
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
 
-  # The RFC 8215 local-use block is refused whole, not decoded. It can host a
-  # Pref64 of any length (/32…/96) whose embedded position is NOT recoverable
-  # from the address alone (RFC 6052 §2.2), so decoding the low 32 bits reads the
-  # wrong octets and can under-block. It is also never globally routed, so there
-  # is no legitimate feed behind it. This is the divergence some in-house copies
-  # got wrong by decoding both prefixes the same way.
-  NAT64_LOCAL_USE = IPAddr.new("64:ff9b:1::/48")  # RFC 8215
+  # iana-generator:begin IANA_SPECIAL_USE_IPV4
+  # Every prefix in the checked-in IANA IPv4 special-purpose snapshot.
+  IANA_SPECIAL_USE_IPV4 = %w[
+    0.0.0.0/8 0.0.0.0/32 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16
+    172.16.0.0/12 192.0.0.0/24 192.0.0.0/29 192.0.0.8/32 192.0.0.9/32
+    192.0.0.10/32 192.0.0.170/32 192.0.0.171/32 192.0.2.0/24 192.31.196.0/24
+    192.52.193.0/24 192.88.99.0/24 192.88.99.2/32 192.168.0.0/16
+    192.175.48.0/24 198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 240.0.0.0/4
+    255.255.255.255/32
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
+  # iana-generator:end IANA_SPECIAL_USE_IPV4
 
-  # SIIT's IPv4-translated form is the third way an IPv4 address rides inside an
-  # IPv6 one, and the only one Ruby has no predicate for: ipv4_mapped?,
-  # ipv4_compat?, private?, loopback? and link_local? are all false for
-  # ::ffff:0:169.254.169.254, so it would reach the metadata address straight
-  # through the branches below. Note the extra group — ::ffff:0:0:0/96 is NOT the
-  # familiar IPv4-mapped ::ffff:0:0/96, and the two ranges do not overlap. Like
-  # the NAT64 well-known prefix it is a fixed /96, so decode the low 32 bits.
-  IPV4_TRANSLATABLE = IPAddr.new("::ffff:0:0:0/96") # RFC 2765
+  # iana-generator:begin IANA_SPECIAL_USE_IPV6
+  # Every prefix in the checked-in IANA IPv6 special-purpose snapshot.
+  IANA_SPECIAL_USE_IPV6 = %w[
+    ::1/128 ::/128 ::ffff:0:0/96 64:ff9b::/96 64:ff9b:1::/48 100::/64
+    100:0:0:1::/64 2001::/23 2001::/32 2001:1::1/128 2001:1::2/128
+    2001:1::3/128 2001:2::/48 2001:3::/32 2001:4:112::/48 2001:10::/28
+    2001:20::/28 2001:30::/28 2001:db8::/32 2002::/16 2620:4f:8000::/48
+    3fff::/20 5f00::/16 fc00::/7 fe80::/10
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
+  # iana-generator:end IANA_SPECIAL_USE_IPV6
 
-  # IPv4-compatible IPv6 is deprecated and must never be a DNS fetch target.
-  # Classify the prefix directly instead of calling IPAddr#ipv4_compat?, which
-  # has been obsolete since Ruby 2.5 and is expected to disappear in ipaddr 2.x.
-  IPV4_COMPATIBLE = IPAddr.new("::/96")
+  IETF_PROTOCOL_ASSIGNMENTS = IPAddr.new("2001::/23").freeze
+  GLOBALLY_REACHABLE_IETF_ASSIGNMENTS = %w[
+    2001:3::/32 2001:4:112::/48
+  ].map { |cidr| IPAddr.new(cidr).freeze }.freeze
+  NAT64_WELL_KNOWN = IPAddr.new("64:ff9b::/96").freeze
+  NAT64_LOCAL_USE = IPAddr.new("64:ff9b:1::/48").freeze
+  IPV4_TRANSLATABLE = IPAddr.new("::ffff:0:0:0/96").freeze
+  IPV4_COMPATIBLE = IPAddr.new("::/96").freeze
 
-  # Every PUBLIC address the host resolves to, IPv4 ahead of IPv6, DNS order
-  # preserved within each family so a provider's round-robin still spreads load.
-  # Empty when the host resolves but every address is blocked; raises
-  # Unresolvable when it resolves to nothing at all, so the caller can tell a
-  # refusal from a lookup failure. A caller that fails over MUST iterate this
-  # list and pin each address; resolving again reopens the rebinding window.
-  # Accepts a hostname or an IP-literal host.
-  def resolve_public_ips(host)
-    addresses = resolve(host)
-    raise Unresolvable, "No address for #{host}" if addresses.empty?
+  POLICY_RANGES = {
+    default: {
+      allocated_ipv6: IANA_ALLOCATED_IPV6_UNICAST,
+      disallowed_ipv4: DISALLOWED_IPV4,
+      disallowed_ipv6: DISALLOWED_IPV6
+    }.freeze,
+    iana_special_use: {
+      ipv4: IANA_SPECIAL_USE_IPV4,
+      ipv6: IANA_SPECIAL_USE_IPV6
+    }.freeze
+  }.freeze
 
-    addresses.reject { |ip| blocked_address?(ip) }
-             .partition(&:ipv4?)
-             .flatten
-             .map(&:to_s)
-  rescue InvalidHost
-    []
+  # Return every admitted address, with IPv4 before IPv6 and resolver order
+  # retained within each family. Malformed direct input returns [].
+  def resolve_public_ips(host, policy: :default)
+    validate_policy!(policy)
+    addresses = resolve(normalize_host(host))
+    public_addresses = addresses.reject { |ip| blocked_address?(ip, policy: policy) }
+    ipv4, ipv6 = public_addresses.partition(&:ipv4?)
+    (ipv4 + ipv6).map { |ip| ip.to_s.freeze }.freeze
+  rescue InvalidInput
+    [].freeze
   end
 
-  # True only if the URL's host resolves to at least one address and NONE are
-  # blocked. For non-pinning callers (they hand the hostname straight to
-  # Net::HTTP, which resolves again), so anything short of "every address is
-  # public" is unsafe. A predicate answers the question it was asked and doesn't
-  # raise: false covers unresolvable and malformed alike. Reach for
-  # .enforce_public_ip or .resolve_public_ip when you need to tell those apart.
-  def resolvable_public_ip?(url)
-    addresses = resolve(host_of(url))
-    addresses.any? && addresses.none? { |ip| blocked_address?(ip) }
-  rescue URI::InvalidURIError, IPAddr::InvalidAddressError, ArgumentError
+  # True only when the URL resolves and every answer is admitted.
+  def resolvable_public_ip?(url, policy: :default)
+    validate_policy!(policy)
+    addresses = resolve(host_of(normalize_url(url)))
+    addresses.none? { |ip| blocked_address?(ip, policy: policy) }
+  rescue InvalidInput, Unresolvable
     false
   end
 
-  # Raise unless the URL's host is safe, for call sites that want a hard stop
-  # rather than a boolean: Unresolvable when it answers with nothing, Violation
-  # when it answers with something we refuse. A malformed URL is a Violation --
-  # there was never a lookup to fail.
-  def enforce_public_ip(url)
-    addresses = resolve(host_of(url))
-    raise Unresolvable, "No address for #{url}" if addresses.empty?
-    raise Violation, "Refusing to fetch private/internal address for #{url}" if addresses.any? { |ip| blocked_address?(ip) }
-  rescue URI::InvalidURIError, IPAddr::InvalidAddressError, ArgumentError
-    raise Violation, "Refusing to fetch malformed address for #{url}"
+  def enforce_public_ip(url, policy: :default)
+    validate_policy!(policy)
+    addresses = resolve(host_of(normalize_url(url)))
+    if addresses.any? { |ip| blocked_address?(ip, policy: policy) }
+      raise Violation, BLOCKED_MESSAGE, cause: nil
+    end
+
+    nil
+  rescue InvalidInput
+    raise Violation, MALFORMED_MESSAGE, cause: nil
   end
 
-  # The single-address compatibility shim for callers migrating from an older
-  # first-address-only guard. Returns the first public address as a String, nil
-  # if the host is malformed or resolves to anything blocked, and raises
-  # Unresolvable if it resolves to nothing -- which is where an older guard
-  # built on Resolv.getaddress raised Resolv::ResolvError, so callers that
-  # distinguished a lookup failure keep doing so. Prefer .resolve_public_ips.
-  def resolve_public_ip(url)
-    addresses = resolve(host_of(url))
-    raise Unresolvable, "No address for #{url}" if addresses.empty?
-    return nil if addresses.any? { |ip| blocked_address?(ip) }
+  # Preserve resolver order here; unlike the plural API this method does not
+  # reorder address families.
+  def resolve_public_ip(url, policy: :default)
+    validate_policy!(policy)
+    addresses = resolve(host_of(normalize_url(url)))
+    return nil if addresses.any? { |ip| blocked_address?(ip, policy: policy) }
 
-    addresses.first.to_s
-  rescue URI::InvalidURIError, IPAddr::InvalidAddressError, ArgumentError
+    addresses.first.to_s.freeze
+  rescue InvalidInput
     nil
   end
 
-  # The classification core. True if this address must never be a fetch target.
-  # Accepts an IPAddr or anything IPAddr.new understands. Errs closed: an address
-  # it cannot parse is blocked.
-  def blocked_address?(ip)
-    ipaddr = ip.is_a?(IPAddr) ? ip : IPAddr.new(ip.to_s)
-    return true unless host_address?(ipaddr)
+  # Classify one endpoint. Malformed inputs and networks fail closed.
+  def blocked_address?(ip, policy: :default)
+    validate_policy!(policy)
+    ipaddr = normalize_ip(ip)
 
-    # DNS never legitimately returns an IPv4 address embedded these two ways, so
-    # refuse them regardless of the address they wrap.
-    if ipaddr.ipv4_mapped? || IPV4_COMPATIBLE.include?(ipaddr)
-      true
-    elsif ipaddr.ipv4?
-      disallowed_ipv4?(ipaddr)
-    elsif NAT64_LOCAL_USE.include?(ipaddr)
-      true
-    elsif NAT64_WELL_KNOWN.include?(ipaddr) || IPV4_TRANSLATABLE.include?(ipaddr)
-      disallowed_ipv4?(embedded_ipv4(ipaddr))
-    else
-      disallowed_ipv6?(ipaddr)
+    return true if policy == :iana_special_use && iana_special_use?(ipaddr)
+    return true if ipaddr.ipv4_mapped? || IPV4_COMPATIBLE.include?(ipaddr)
+    return disallowed_ipv4?(ipaddr) if ipaddr.ipv4?
+    return true if NAT64_LOCAL_USE.include?(ipaddr)
+
+    if NAT64_WELL_KNOWN.include?(ipaddr) || IPV4_TRANSLATABLE.include?(ipaddr)
+      return disallowed_ipv4?(embedded_ipv4(ipaddr))
     end
-  rescue IPAddr::InvalidAddressError
+
+    disallowed_ipv6?(ipaddr)
+  rescue InvalidInput
     true
   end
 
   private
+    def validate_policy!(policy)
+      return policy if POLICIES.include?(policy)
 
-  # A numeric host skips DNS so a public literal URL resolves directly and an
-  # internal literal is still caught by blocked_address?. Socket's numeric-only
-  # parser comes first because it accepts every legacy IPv4 spelling the
-  # connection layer does (decimal, hex, octal, and shortened forms), while
-  # IPAddr does not. Otherwise resolve via Resolv.getaddresses, returning every
-  # address from Ruby's hosts-plus-DNS chain. System getaddrinfo may consult
-  # additional NSS sources; pinning an address returned here avoids that second
-  # resolution. Returns [IPAddr].
-  def resolve(host)
-    literals = numeric_literals(host)
-
-    if literals
-      literals
-    else
-      Resolv.getaddresses(host).map { |a| IPAddr.new(a) }
-    end
-  rescue Resolv::ResolvError, Resolv::ResolvTimeout
-    []
-  end
-
-  # Every address Socket's numeric-only parser finds. AI_NUMERICHOST guarantees
-  # this call never falls through to DNS. Its success is authoritative: these
-  # tokens must not be reinterpreted as names by Resolv, because Net::HTTP's
-  # getaddrinfo call will reinterpret them as the numeric addresses returned
-  # here. IPAddr remains as a fallback for syntax it alone accepts, notably a
-  # full-width /32 or /128 host prefix. nil means the token is a name.
-  def numeric_literals(host)
-    # Refuse malformed IPv4-shaped text before consulting the platform parser.
-    # Some connection layers may accept decorations that others reject; none
-    # may turn them into a public DNS name after Surfguard classified them.
-    if malformed_numeric_host_candidate?(host)
-      raise InvalidHost, "malformed numeric-looking host #{host.inspect}"
+      raise ArgumentError, "unknown policy", cause: nil
     end
 
-    Socket.getaddrinfo(
-      host, nil, Socket::AF_UNSPEC, Socket::SOCK_STREAM, 0, Socket::AI_NUMERICHOST
-    ).map { |address| IPAddr.new(address[3]) }.uniq
-  rescue SocketError
-    literal = ip_literal(host)
-    return [ literal ] if literal
+    def normalize_url(url)
+      raise InvalidInput, cause: nil unless String === url
 
-    # An ordinary name may proceed to Resolv after AI_NUMERICHOST says it is
-    # not numeric. A token shaped like a legacy IPv4 spelling may not: if the
-    # system numeric parser itself failed abnormally, asking DNS would recreate
-    # the parser/resolver identity gap this method exists to close.
-    raise InvalidHost, "numeric-looking host #{host.inspect} could not be classified" if numeric_host_candidate?(host)
+      owned_string(url)
+    end
 
-    nil
-  end
+    def normalize_host(host)
+      if IPAddr === host
+        ip = copy_ipaddr(host)
+        raise InvalidInput, cause: nil unless host_address?(ip)
 
-  def numeric_host_candidate?(host)
-    text = host.to_s
-    return true if text.include?(":") # Invalid IPv6 syntax is never a DNS name.
+        ip
+      elsif String === host
+        text = owned_string(host)
+        raise InvalidInput, cause: nil if text.empty? || text.bytesize > MAX_HOST_BYTES
+        raise InvalidInput, cause: nil if text.include?("%")
 
-    legacy_ipv4_shape?(text)
-  end
+        text
+      else
+        raise InvalidInput, cause: nil
+      end
+    end
 
-  def malformed_numeric_host_candidate?(host)
-    text = host.to_s
-    return false if text.include?(":") # IPv6 literals and zones go to AI_NUMERICHOST.
+    def normalize_ip(value)
+      ip = if IPAddr === value
+        copy_ipaddr(value)
+      elsif String === value
+        copy_ipaddr(IPAddr.new(owned_string(value)))
+      else
+        raise InvalidInput, cause: nil
+      end
+      raise InvalidInput, cause: nil unless host_address?(ip)
 
-    # Isolate the address: drop every leading separator, then keep only what
-    # precedes the next one. Removing a single separator would let a second one
-    # ("//127.0.0.1", "%127.0.0.1%lo") hide the legacy IPv4 shape, so the token
-    # would reach the platform parser and, failing there, be handed to DNS as a
-    # name — the parser/resolver identity gap this check exists to close.
-    core = text.sub(%r{\A[%/]+}, "")[%r{\A[^%/]*}]
-    labels = core.split(".", -1)
-    malformed = core != text || labels.any?(&:empty?)
-    return false unless malformed && legacy_ipv4_shape?(core)
+      ip.freeze
+    rescue IPAddr::Error
+      raise InvalidInput, cause: nil
+    end
 
-    # Full-width host prefixes are documented inputs and IPAddr parses them
-    # unambiguously. Shorter or otherwise invalid prefixes remain malformed.
-    return false if full_width_host_literal?(text)
+    def copy_ipaddr(ip)
+      family = IPAddr.instance_method(:family).bind_call(ip)
+      raise InvalidInput, cause: nil unless Integer === family
 
-    true
-  end
+      canonical_family = case family
+      when Socket::AF_INET
+        Socket::AF_INET
+      when Socket::AF_INET6
+        Socket::AF_INET6
+      else
+        raise InvalidInput, cause: nil
+      end
 
-  def legacy_ipv4_shape?(text)
-    parts = text.split(".", -1).reject(&:empty?)
-    (1..4).cover?(parts.length) &&
-      parts.all? { |part| part.match?(/\A(?:0[xX][0-9A-Fa-f]+|[0-9]+)\z/) }
-  end
+      integer = IPAddr.instance_method(:to_i).bind_call(ip)
+      raise InvalidInput, cause: nil unless Integer === integer
 
-  def full_width_host_literal?(text)
-    host_address?(IPAddr.new(text))
-  rescue IPAddr::InvalidAddressError
-    false
-  end
+      mask = Object.instance_method(:instance_variable_get).bind_call(ip, :@mask_addr)
+      raise InvalidInput, cause: nil unless Integer === mask
 
-  # nil for anything IPAddr cannot parse. A shortened prefix is not a host and
-  # is rejected rather than normalized to its network address or sent to DNS.
-  def ip_literal(host)
-    ipaddr = IPAddr.new(host)
-    raise InvalidHost, "#{host.inspect} is a network, not a host" unless host_address?(ipaddr)
+      prefix = IPAddr.instance_method(:prefix).bind_call(ip)
+      bits = canonical_family == Socket::AF_INET ? 32 : 128
+      raise InvalidInput, cause: nil unless (0..bits).cover?(prefix)
+      raise InvalidInput, cause: nil unless (0...(1 << bits)).cover?(integer)
+      raise InvalidInput, cause: nil unless mask == ((1 << prefix) - 1) << (bits - prefix)
 
-    ipaddr
-  rescue IPAddr::InvalidAddressError
-    nil
-  end
+      zone = Object.instance_method(:instance_variable_get).bind_call(ip, :@zone_id)
+      raise InvalidInput, cause: nil unless NilClass === zone
 
-  def host_address?(ipaddr)
-    ipaddr.prefix == (ipaddr.ipv4? ? 32 : 128)
-  end
+      IPAddr.new(integer, canonical_family).mask(prefix)
+    end
 
-  def host_of(url)
-    # URI#host is "" for "http://" and nil when there's no authority at all.
-    # Neither is a name to look up, so both are malformed rather than a lookup
-    # that failed. URI#host keeps IPv6 brackets ([::1]); IPAddr.new won't take them.
-    host = URI.parse(url).host
-    raise URI::InvalidURIError, "no host in #{url.inspect}" if host.nil? || host.empty?
+    def owned_string(value)
+      raise InvalidInput, cause: nil unless String === value
 
-    host.delete_prefix("[").delete_suffix("]")
-  end
+      text = String.new(value)
+      raise InvalidInput, cause: nil unless text.valid_encoding? && text.ascii_only?
+      raise InvalidInput, cause: nil if text.include?("\0")
 
-  def disallowed_ipv4?(ipaddr)
-    ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? ||
-      DISALLOWED_IPV4.any? { |range| range.include?(ipaddr) }
-  end
+      text.freeze
+    end
 
-  def disallowed_ipv6?(ipaddr)
-    return false if GLOBALLY_REACHABLE_IETF_ASSIGNMENTS.any? { |range| range.include?(ipaddr) }
+    def resolve(host)
+      literals = if IPAddr === host
+        [ host ]
+      else
+        numeric_literals(host)
+      end
+      raw = literals || Resolv.getaddresses(host)
+      normalize_answers(raw)
+    rescue Resolv::ResolvError, Resolv::ResolvTimeout, InvalidResolverResult,
+      SocketError, SystemCallError, IOError
+      raise Unresolvable, UNRESOLVABLE_MESSAGE, cause: nil
+    end
 
-    ipaddr.private? || ipaddr.loopback? || ipaddr.link_local? ||
-      IETF_PROTOCOL_ASSIGNMENTS.include?(ipaddr) ||
-      DISALLOWED_IPV6.any? { |range| range.include?(ipaddr) }
-  end
+    def normalize_answers(raw)
+      raise InvalidResolverResult, cause: nil unless Array === raw
 
-  # RFC 6052 §2.2: a fixed /96 translation prefix carries the IPv4 target in the
-  # low 32 bits.
-  def embedded_ipv4(ipaddr)
-    IPAddr.new([ ipaddr.to_i & 0xffffffff ].pack("N").unpack("C4").join("."))
-  end
+      answers = []
+      seen = {}
+      raw_count = 0
+      Array.instance_method(:each).bind_call(raw) do |answer|
+        raw_count += 1
+        raise InvalidResolverResult, cause: nil if raw_count > MAX_ADDRESSES
+
+        ip = normalize_resolver_answer(answer)
+        key = [ ip.family, ip.to_i ]
+        next if seen[key]
+
+        seen[key] = true
+        answers << ip
+      end
+      raise Unresolvable, UNRESOLVABLE_MESSAGE, cause: nil if answers.empty?
+
+      answers.freeze
+    end
+
+    def normalize_resolver_answer(answer)
+      raise InvalidResolverResult, cause: nil unless String === answer || IPAddr === answer
+
+      normalize_ip(answer)
+    rescue InvalidInput
+      raise InvalidResolverResult, cause: nil
+    end
+
+    def numeric_literals(host)
+      raise InvalidInput, cause: nil unless valid_host_syntax?(host)
+      raise InvalidInput, cause: nil if malformed_numeric_host_candidate?(host)
+
+      raw = Socket.getaddrinfo(
+        host, nil, Socket::AF_UNSPEC, Socket::SOCK_STREAM, 0, Socket::AI_NUMERICHOST
+      )
+      raise InvalidResolverResult, cause: nil unless Array === raw
+
+      Array.instance_method(:map).bind_call(raw) do |answer|
+        raise InvalidResolverResult, cause: nil unless Array === answer
+
+        address = Array.instance_method(:[]).bind_call(answer, 3)
+        raise InvalidResolverResult, cause: nil unless String === address
+
+        address
+      end
+    rescue SocketError
+      literal = ip_literal(host)
+      return [ literal.freeze ] if literal
+
+      raise InvalidInput, cause: nil if numeric_host_candidate?(host)
+
+      nil
+    end
+
+    def valid_host_syntax?(host)
+      return true if host.include?(":") || legacy_ipv4_shape?(host) || full_width_host_literal?(host)
+
+      absolute = host.end_with?(".")
+      labels = (absolute ? host[0...-1] : host).split(".", -1)
+      return false if labels.empty? || labels.any?(&:empty?)
+
+      labels.all? do |label|
+        label.bytesize <= 63 && label.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\z/)
+      end
+    end
+
+    def numeric_host_candidate?(host)
+      host.include?(":") || legacy_ipv4_shape?(host)
+    end
+
+    def malformed_numeric_host_candidate?(host)
+      return false if host.include?(":")
+
+      core = host.sub(%r{\A[%/]+}, "")[%r{\A[^%/]*}]
+      labels = core.split(".", -1)
+      malformed = core != host || labels.any?(&:empty?)
+      malformed && legacy_ipv4_shape?(core) && !full_width_host_literal?(host)
+    end
+
+    def legacy_ipv4_shape?(text)
+      parts = text.split(".", -1).reject(&:empty?)
+      (1..4).cover?(parts.length) &&
+        parts.all? { |part| part.match?(/\A(?:0[xX][0-9A-Fa-f]+|[0-9]+)\z/) }
+    end
+
+    def full_width_host_literal?(text)
+      host_address?(IPAddr.new(text))
+    rescue IPAddr::InvalidAddressError
+      false
+    end
+
+    def ip_literal(host)
+      normalize_ip(host)
+    rescue InvalidInput
+      nil
+    end
+
+    def host_address?(ip)
+      ip.prefix == (ip.ipv4? ? 32 : 128)
+    end
+
+    def host_of(url)
+      uri = URI.parse(url)
+      host = uri.host
+      raise InvalidInput, cause: nil if host.nil? || host.empty?
+      raise InvalidInput, cause: nil if host.match?(/\A\[v[0-9A-F]+\./i)
+
+      normalize_host(host.delete_prefix("[").delete_suffix("]"))
+    rescue URI::InvalidURIError
+      raise InvalidInput, cause: nil
+    end
+
+    def iana_special_use?(ip)
+      ranges = ip.ipv4? ? IANA_SPECIAL_USE_IPV4 : IANA_SPECIAL_USE_IPV6
+      ranges.any? { |range| range.include?(ip) }
+    end
+
+    def disallowed_ipv4?(ip)
+      ip.private? || ip.loopback? || ip.link_local? ||
+        DISALLOWED_IPV4.any? { |range| range.include?(ip) }
+    end
+
+    def disallowed_ipv6?(ip)
+      return false if GLOBALLY_REACHABLE_IETF_ASSIGNMENTS.any? { |range| range.include?(ip) }
+      return true if ip.private? || ip.loopback? || ip.link_local?
+      return true if IETF_PROTOCOL_ASSIGNMENTS.include?(ip)
+      return true if DISALLOWED_IPV6.any? { |range| range.include?(ip) }
+
+      IANA_ALLOCATED_IPV6_UNICAST.none? { |range| range.include?(ip) }
+    end
+
+    def embedded_ipv4(ip)
+      IPAddr.new([ ip.to_i & 0xffffffff ].pack("N").unpack("C4").join("."))
+    end
 end

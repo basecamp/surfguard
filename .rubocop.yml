@@ -2,7 +2,7 @@ inherit_gem:
   rubocop-37signals: rubocop.yml
 
 AllCops:
-  TargetRubyVersion: 3.1
+  TargetRubyVersion: 3.4
   SuggestExtensions: false
 
 # assert_not is ActiveSupport, not minitest. This suite runs on bare Ruby

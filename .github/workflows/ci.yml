@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
 
 # Least privilege: no default grants; every job declares exactly what it needs.
 permissions: {}
@@ -20,12 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    timeout-minutes: 15
     # head tracks unreleased Ruby — surface breakage early without blocking a merge.
     continue-on-error: ${{ matrix.ruby == 'head' }}
     strategy:
       fail-fast: false
       matrix:
-        ruby: [ "3.1", "3.2", "3.3", "3.4", "4.0", "head" ]
+        ruby: [ "3.4.5", "3.4", "4.0", "head" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +39,8 @@ jobs:
           # Bare Ruby on purpose: prove the gem and its suite need nothing
           # beyond the standard library (rake/minitest ship with Ruby).
           bundler-cache: false
+      - name: Reject vulnerable effective resolv versions
+        run: ruby script/check_resolv_version.rb
       - run: rake test
 
   lint:
@@ -43,6 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,11 +57,13 @@ jobs:
         with:
           ruby-version: "3.4"
           bundler-cache: true
+      - run: bundle exec ruby script/check_resolv_version.rb
       - run: bundle exec rubocop
       # Coverage thresholds plus the release-script fixture tests (test/release/).
       - run: bundle exec rake test
         env:
           COVERAGE: "1"
+      - run: ruby script/generate_iana_data.rb --check
       # dependency-review only screens vulnerable/licensed deps — it does not
       # reject a benign new runtime dependency. Enforce the invariant here so
       # a spec.add_dependency fails the PR, not the eventual release build.
@@ -73,6 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,6 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,17 +133,103 @@ jobs:
           fail-on-scopes: development, runtime, unknown
           show-openssf-scorecard: false
 
+  platforms:
+    name: "Core suite (${{ matrix.os }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.4.5"
+          bundler-cache: false
+      - run: ruby script/check_resolv_version.rb
+      - run: ruby -Itest -e 'Dir["test/surfguard*_test.rb"].sort.each { |file| require File.expand_path(file) }'
+      - run: ruby script/generate_iana_data.rb --check
+
+  musl:
+    name: Core suite (pinned musl)
+    runs-on: ubuntu-latest
+    container: ruby:3.4.5-alpine3.22@sha256:e284f39a2103a564dca9771a81bfecb455b04cd3be4149b133ed7e508ef1b65f
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ruby script/check_resolv_version.rb
+      - run: ruby -Itest -e 'Dir["test/surfguard*_test.rb"].sort.each { |file| require File.expand_path(file) }'
+      - run: ruby script/generate_iana_data.rb --check
+
+  iana-drift:
+    name: IANA semantic drift
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.4.5"
+          bundler-cache: false
+      - run: ruby script/generate_iana_data.rb --check
+      - run: ruby script/check_iana_drift.rb
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Repository default setup owns SARIF uploads. This independently runs
+      # the same pinned analyzer as a required CI fan-in job without creating
+      # an incompatible second code-scanning configuration.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          languages: ruby
+      - uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3
+        with:
+          upload: never
+          upload-database: false
+
   # Stable fan-in for branch protection: require exactly one check ("CI")
   # regardless of how the matrix or job list evolves.
   ci:
     name: CI
     if: always()
-    needs: [ test, lint, lint-actions, dependency-review ]
+    timeout-minutes: 15
+    needs: [ test, lint, lint-actions, dependency-review, platforms, musl, iana-drift, codeql ]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
       - name: Fail if any required job failed or was cancelled
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - name: Permit only the event-gated drift job to be skipped
+        if: needs.iana-drift.result == 'skipped' && github.event_name != 'push' && github.event_name != 'pull_request'
+        run: exit 1
+      - name: Permit dependency review to skip only outside pull requests
+        if: needs.dependency-review.result == 'skipped' && github.event_name == 'pull_request'
+        run: exit 1
+      - name: Reject every other skipped required job
+        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped'
         run: exit 1
       - name: All green
         run: echo "All required jobs succeeded (or were legitimately skipped)."

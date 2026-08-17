@@ -17,7 +17,7 @@ Gem::Specification.new do |spec|
                      "in a blocked one. Standard library only, no runtime dependencies."
   spec.homepage    = "https://github.com/basecamp/surfguard"
   spec.license     = "MIT"
-  spec.required_ruby_version = ">= 3.1"
+  spec.required_ruby_version = ">= 3.4.5"
 
   # homepage already points at the repo, so a source_code_uri/homepage_uri that
   # repeats it only earns a "same uri for multiple keys" warning. The issue
