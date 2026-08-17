@@ -101,7 +101,7 @@ jobs:
       - name: Verify the packaged gem (rehearsals included)
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION"
+        run: ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION" "$(git rev-parse HEAD)"
       - name: Record the artifact digest
         id: digest
         env:
