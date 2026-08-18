@@ -31,6 +31,10 @@ pinning, custom DNS64 prefixes, and nonstandard NSS sources have caller or deplo
 documented in the README. Those boundaries by themselves are not classification bugs, but a bypass
 when the documented contract is followed qualifies.
 
+Synchronous name resolution has no independent cancellation deadline; callers own request and
+worker deadlines. Public-addressed internal routes, custom DNS64, ISATAP/6rd, provider aliases,
+proxy configuration, and resolver/NSS divergence remain deployment risks requiring egress controls.
+
 Non-security bugs and questions belong in the
 [regular issue tracker](https://github.com/basecamp/surfguard/issues).
 
