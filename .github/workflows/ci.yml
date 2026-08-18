@@ -133,6 +133,59 @@ jobs:
           fail-on-scopes: development, runtime, unknown
           show-openssf-scorecard: false
 
+  package-build:
+    name: Build package candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.4.5"
+          bundler-cache: false
+      - name: Determine package version
+        id: version
+        run: echo "version=$(ruby -Ilib -rsurfguard/version -e 'puts Surfguard::VERSION')" >> "$GITHUB_OUTPUT"
+      - name: Build candidate
+        run: |
+          bundle install --jobs 4 --retry 3
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" gem build --strict surfguard.gemspec
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-rubygem
+          path: surfguard-${{ steps.version.outputs.version }}.gem
+          if-no-files-found: error
+
+  package:
+    name: Fresh-runner isolated package suite
+    needs: package-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.4.5"
+          bundler-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-rubygem
+      - name: Verify exact package against this commit and installed bytes
+        env:
+          VERSION: ${{ needs.package-build.outputs.version }}
+        run: ruby script/release/verify_package.rb "surfguard-${VERSION}.gem" surfguard "$VERSION" "$GITHUB_SHA"
+
   platforms:
     name: "Core suite (${{ matrix.os }})"
     strategy:
@@ -215,7 +268,7 @@ jobs:
     name: CI
     if: always()
     timeout-minutes: 15
-    needs: [ test, lint, lint-actions, dependency-review, platforms, musl, iana-drift, codeql ]
+    needs: [ test, lint, lint-actions, dependency-review, package-build, package, platforms, musl, iana-drift, codeql ]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -229,7 +282,7 @@ jobs:
         if: needs.dependency-review.result == 'skipped' && github.event_name == 'pull_request'
         run: exit 1
       - name: Reject every other skipped required job
-        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped'
+        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.package-build.result == 'skipped' || needs.package.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped'
         run: exit 1
       - name: All green
         run: echo "All required jobs succeeded (or were legitimately skipped)."

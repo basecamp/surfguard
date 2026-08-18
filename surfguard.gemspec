@@ -28,7 +28,7 @@ Gem::Specification.new do |spec|
     "rubygems_mfa_required" => "true"
   }
 
-  spec.files = Dir["lib/**/*.rb", "README.md", "LICENSE", "SECURITY.md"]
+  spec.files = %w[lib/surfguard.rb lib/surfguard/version.rb README.md LICENSE SECURITY.md]
   spec.require_paths = [ "lib" ]
 
   # Standard library only: ipaddr, resolv, socket, uri. No runtime dependencies on
