@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Published version to recover (e.g. 0.1.0)"
+        description: "Published version to recover (0.2.0 or later; earlier releases are complete and out of recovery's scope)"
         required: true
         type: string
 
@@ -124,6 +124,16 @@ jobs:
           # is our own file with exactly this shape, so anchored sed suffices
           # — and the extracted values are validated before use.
           pins=tagged-src/.github/workflows/release.yml
+          # Recovery finishes only releases cut by the 0.2.0+ pipeline, whose
+          # tags carry these pins plus RELEASE_NOTES_X.Y.Z.md and the exact
+          # package contract the dispatch-revision verifier asserts. Earlier
+          # (0.1.x) releases are already complete — there is nothing for
+          # recovery to finish — and a defective published release ships a new
+          # patch version instead (RELEASING.md).
+          if [ "$(grep --count '^  RUBYGEMS_UPDATE_SHA256: ' "$pins")" -eq 0 ]; then
+            echo "::error::Tag v${VERSION} predates the recovery-capable release pipeline; recovery applies to 0.2.0+ tags only. See RELEASING.md: earlier releases are complete, and a defective release ships a new patch version."
+            exit 1
+          fi
           [ "$(grep --count '^  RUBY_VERSION: ' "$pins")" -eq 1 ]
           [ "$(grep --count '^  RUBYGEMS_VERSION: ' "$pins")" -eq 1 ]
           [ "$(grep --count '^  RUBYGEMS_UPDATE_SHA256: ' "$pins")" -eq 1 ]
@@ -319,6 +329,32 @@ jobs:
           if [ "$type" = tag ]; then object="$(gh api "repos/${REPO}/git/tags/${sha}" --jq '.object.type + " " + .object.sha')"; type="${object%% *}"; sha="${object#* }"; fi
           [ "$type" = commit ] && [ "$sha" = "$TAG_SHA" ]
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          # overwrite_files: false silently retains a same-named asset, so an
+          # asset left by an earlier partial run must be proven byte-identical
+          # to the verified canonical gem before recovery can succeed. Only a
+          # missing release (HTTP 404) may skip the comparison; any other
+          # query failure fails closed.
+          set +e
+          asset_names="$(gh api "repos/${REPO}/releases/tags/v${VERSION}" --jq '[.assets[].name]' 2>release-query-error.txt)"
+          query_status=$?
+          set -e
+          if [ "$query_status" -ne 0 ]; then
+            if ! grep --quiet "HTTP 404" release-query-error.txt; then
+              cat release-query-error.txt
+              echo "::error::Could not determine whether a release asset already exists"
+              exit 1
+            fi
+            asset_names="[]"
+          fi
+          if jq --exit-status --arg name "surfguard-${VERSION}.gem" 'index($name) != null' <<<"$asset_names" >/dev/null; then
+            gh release download "v${VERSION}" --repo "$REPO" --pattern "surfguard-${VERSION}.gem" --output existing-asset.gem
+            existing="$(sha256sum existing-asset.gem | awk '{print $1}')"
+            rm existing-asset.gem
+            if [ "$existing" != "$GEM_SHA256" ]; then
+              echo "::error::Existing release asset digest ${existing} does not match canonical ${GEM_SHA256}; refusing to finish a recovery that serves different bytes"
+              exit 1
+            fi
+          fi
       - name: Create the GitHub Release from the canonical bytes # zizmor: ignore[superfluous-actions] -- the pinned action provides fail-on-unmatched-files, reviewed release-note handling, prerelease handling, target_commitish, and overwrite control as one operation
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

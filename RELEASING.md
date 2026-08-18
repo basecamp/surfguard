@@ -128,6 +128,14 @@ equality is what makes the recovery attestation honest: the attested bytes
 are demonstrably the product of the tagged source, not merely whatever the
 registry served. A mismatch stops the workflow for a human.
 
+Recovery applies to **0.2.0+ tags only** — releases cut by the pipeline it
+mirrors, whose tags carry the toolchain digest pins, `RELEASE_NOTES_X.Y.Z.md`,
+and the package contract the verifier asserts. The 0.1.x releases are already
+complete (published, attested, released), so there is nothing for recovery to
+finish; a defective earlier release ships a new patch version per SECURITY.md.
+The workflow refuses pre-0.2.0 tags with an explicit error rather than
+carrying untestable legacy fallbacks.
+
 Dispatch recovery **on the release tag** when possible:
 
 ```sh

@@ -261,7 +261,16 @@ jobs:
         env:
           VERSION: ${{ needs.source.outputs.version }}
           GEM_SHA: ${{ needs.package.outputs.gem_sha256 }}
-        run: echo "decision=$(ruby script/release/registry_check.rb surfguard "$VERSION" "$GEM_SHA" 300)" >> "$GITHUB_OUTPUT"
+        # A standalone assignment so a nonzero helper exit fails the step
+        # (inside `echo "$(…)"` it would be swallowed), plus an explicit
+        # allowlist of the two valid decisions before anything is recorded.
+        run: |
+          decision="$(ruby script/release/registry_check.rb surfguard "$VERSION" "$GEM_SHA" 300)"
+          case "$decision" in
+            push|skip) ;;
+            *) echo "::error::Reconciliation produced no usable decision"; exit 1 ;;
+          esac
+          echo "decision=${decision}" >> "$GITHUB_OUTPUT"
 
   publish:
     name: Publish with hosted RubyGems
@@ -389,6 +398,32 @@ jobs:
           if [ "$type" = tag ]; then object="$(gh api "repos/${REPO}/git/tags/${sha}" --jq '.object.type + " " + .object.sha')"; type="${object%% *}"; sha="${object#* }"; fi
           [ "$type" = commit ] && [ "$sha" = "$EXPECTED_COMMIT" ]
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          # overwrite_files: false silently retains a same-named asset, so an
+          # asset left by a partial or manual run must be proven byte-identical
+          # to the canonical gem before this job can succeed. Only a missing
+          # release (HTTP 404) may skip the comparison; any other query failure
+          # fails closed.
+          set +e
+          asset_names="$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '[.assets[].name]' 2>release-query-error.txt)"
+          query_status=$?
+          set -e
+          if [ "$query_status" -ne 0 ]; then
+            if ! grep --quiet "HTTP 404" release-query-error.txt; then
+              cat release-query-error.txt
+              echo "::error::Could not determine whether a release asset already exists"
+              exit 1
+            fi
+            asset_names="[]"
+          fi
+          if jq --exit-status --arg name "surfguard-${VERSION}.gem" 'index($name) != null' <<<"$asset_names" >/dev/null; then
+            gh release download "$TAG" --repo "$REPO" --pattern "surfguard-${VERSION}.gem" --output existing-asset.gem
+            existing="$(sha256sum existing-asset.gem | awk '{print $1}')"
+            rm existing-asset.gem
+            if [ "$existing" != "$EXPECTED_DIGEST" ]; then
+              echo "::error::Existing release asset digest ${existing} does not match canonical ${EXPECTED_DIGEST}; refusing to finish a release that serves different bytes"
+              exit 1
+            fi
+          fi
       - name: Create the GitHub Release from the canonical bytes # zizmor: ignore[superfluous-actions] -- the pinned action provides fail-on-unmatched-files, reviewed release-note handling, prerelease handling, target_commitish, and overwrite control as one operation
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

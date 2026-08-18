@@ -152,6 +152,31 @@ class WorkflowPolicyTest < Minitest::Test
     end
   end
 
+  def test_reconciliation_decision_fails_closed_and_is_allowlisted
+    check = workflow.fetch("jobs").fetch("reconcile").fetch("steps")
+      .find { |step| step["id"] == "check" }.fetch("run")
+
+    # A standalone assignment (never inside `echo "$(…)"`) so a nonzero helper
+    # exit fails the step, then an explicit push/skip allowlist before the
+    # decision is recorded.
+    assert_match(/^decision="\$\(ruby script\/release\/registry_check\.rb /, check)
+    assert_includes check, "push|skip"
+    refute_match(/echo "decision=\$\(/, check)
+  end
+
+  def test_release_creation_verifies_any_existing_asset_before_upload
+    [ [ RELEASE, "EXPECTED_DIGEST" ], [ RECOVERY, "GEM_SHA256" ] ].each do |path, digest_variable|
+      steps = workflow(path).fetch("jobs").fetch("github-release").fetch("steps")
+      preflight = steps.index { |step| step["run"]&.include?("existing-asset.gem") }
+      authority = steps.index { |step| step["uses"]&.start_with?("softprops/action-gh-release@") }
+
+      refute_nil preflight, path
+      assert_operator preflight, :<, authority, path
+      assert_includes steps.fetch(preflight).fetch("run"), digest_variable
+      assert_equal false, steps.fetch(authority).fetch("with").fetch("overwrite_files"), path
+    end
+  end
+
   def test_release_has_independent_rebuild_and_script_digest_verification
     jobs = workflow.fetch("jobs")
     assert jobs.key?("rebuild")
@@ -364,7 +389,8 @@ class WorkflowPolicyTest < Minitest::Test
     assert_includes boundary, '.base.sha == $base and .base.ref == "main"'
     assert_includes boundary, ".base.repo.full_name == $repo"
     assert_includes boundary, '.author.login == "dependabot[bot]"'
-    assert_includes boundary, '.committer.login == "dependabot[bot]"'
+    # Dependabot commits are committed and signed server-side by GitHub.
+    assert_includes boundary, '.committer.login == "web-flow"'
     assert_includes boundary, ".commit.verification.verified == true"
     assert_operator boundary.index('revalidate_current_pr "before approval"'), :<, boundary.index("-f event=APPROVE")
     assert_operator boundary.index("-f event=APPROVE"), :<, boundary.index('revalidate_current_pr "before merge"')
