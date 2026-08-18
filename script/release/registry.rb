@@ -583,7 +583,11 @@ module Surfguard
         end
 
         def version_uri(version)
-          raise Error, "invalid gem version" unless version.to_s.match?(/\A(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}\z/)
+          # Exact semver plus optional RubyGems prerelease segments (0.2.0.rc1),
+          # the version domain the release workflows accept. Alphanumeric
+          # dot-separated segments only, so interpolation stays URI/path-safe.
+          raise Error, "invalid gem version" \
+            unless version.to_s.match?(/\A(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}(?:\.[A-Za-z0-9]+)*\z/)
 
           URI("#{HOST}/api/v2/rubygems/#{@name}/versions/#{version}.json")
         end

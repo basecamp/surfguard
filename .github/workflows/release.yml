@@ -116,12 +116,16 @@ jobs:
           path: surfguard-${{ steps.version.outputs.version }}.gem
           if-no-files-found: error
       # The unprivileged confirm job runs these scripts without checking out
-      # the repo. The OIDC-capable publish job deliberately does not download
-      # or execute them.
+      # the repo, so the artifact carries the Surfguard library registry.rb
+      # loads for address classification, laid out at repo-relative paths.
+      # The OIDC-capable publish job deliberately does not download or
+      # execute them.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-scripts
           path: |
+            lib/surfguard.rb
+            lib/surfguard/version.rb
             script/release/registry.rb
             script/release/registry_confirm.rb
           if-no-files-found: error
@@ -283,10 +287,11 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: rubygem
+      # Spanning lib/ and script/, the artifact is rooted at the repo root:
+      # extracting into the workspace restores both trees in place.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-scripts
-          path: script/release
       - name: Verify artifact identity (digest must match the build job's)
         run: |
           actual="$(sha256sum "surfguard-${VERSION}.gem" | awk '{ print $1 }')"

@@ -1001,6 +1001,16 @@ class RegistryTest < Minitest::Test
     end
   end
 
+  def test_version_validation_accepts_prerelease_segments_and_stays_path_safe
+    registry = scripted(res(404))
+    assert_equal :push, registry.check("0.2.0.rc1", DIGEST)
+    assert_equal [ "https://rubygems.org/api/v2/rubygems/surfguard/versions/0.2.0.rc1.json" ], @requests
+
+    %w[01.0.0 1.0 0.2.0. 0.2.0..rc1 0.2.0.rc-1 0.2.0/evil 0.2.0.rc1%2e ../0.2.0].each do |version|
+      assert_raises(Registry::Error, version) { scripted(res(404)).check(version, DIGEST) }
+    end
+  end
+
   def test_verified_download_in_memory_detects_oversize_and_post_verification_change
     registry = Registry.new(NAME, http: ->(*) { }, sleeper: ->(*) { }, clock: -> { 0.0 })
     registry.define_singleton_method(:stream_verified_download) do |_version, destination, required_sha: nil|
