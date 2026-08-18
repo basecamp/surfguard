@@ -220,6 +220,8 @@ created through the API pinned to the validated head commit, the merge is
 pinned with `--match-head-commit`, and a human push to a Dependabot PR
 triggers a revoke job that disables any pending auto-merge (the
 dismiss-stale-reviews branch rule retracts the bot approval at the same
-time). CODEOWNERS is deliberately scoped (no `*` rule, no `Gemfile.lock`
-rule) so lockfile-only Dependabot PRs don't deadlock on code-owner review;
-the required `CI` check still gates every merge.
+time). CODEOWNERS pairs a blanket `* @jeremy` rule with an ownerless
+`/Gemfile.lock` override: every path requires code-owner review except the
+lockfile, so lockfile-only Dependabot PRs don't deadlock on code-owner
+review while any PR touching anything else stays human-gated; the required
+`CI` check still gates every merge.
