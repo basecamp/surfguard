@@ -113,11 +113,13 @@ jobs:
             esac
           done <<<"$files"
 
-          # Every commit must be Dependabot's and signature-verified.
+          # Every commit must be authored by Dependabot, committed by GitHub's
+          # signer (web-flow — Dependabot commits are created and signed
+          # server-side), and signature-verified.
           commits="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate --slurp | jq 'add')"
           jq --exit-status --arg sha "$head_sha" '
             length > 0 and .[-1].sha == $sha and
-            all(.[]; .author.login == "dependabot[bot]" and .committer.login == "dependabot[bot]" and .commit.verification.verified == true)
+            all(.[]; .author.login == "dependabot[bot]" and .committer.login == "web-flow" and .commit.verification.verified == true)
           ' <<<"$commits" >/dev/null \
             || fail "unverified or non-Dependabot commits present"
 
@@ -169,7 +171,7 @@ jobs:
             commits="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate --slurp | jq 'add')"
             jq --exit-status --arg sha "$EVENT_HEAD_SHA" '
               length > 0 and .[-1].sha == $sha and
-              all(.[]; .author.login == "dependabot[bot]" and .committer.login == "dependabot[bot]" and .commit.verification.verified == true)
+              all(.[]; .author.login == "dependabot[bot]" and .committer.login == "web-flow" and .commit.verification.verified == true)
             ' <<<"$commits" >/dev/null || fail "commit identity or signature changed ${phase}"
           }
 

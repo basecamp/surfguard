@@ -155,7 +155,15 @@ class DependabotValidatorTest < Minitest::Test
     platform_flip = platformed.call(File.binread(LOCK))
     _out, err, status = validate(platform_flip)
     refute_predicate status, :success?
-    assert_match(/did not increase/, err)
+    assert_match(/platform changed/, err)
+
+    bump_with_flip = File.read(LOCK)
+      .sub("    rake (13.4.2)", "    rake (13.4.3-x86_64-linux)")
+      .sub("  rake (13.4.2) sha256=", "  rake (13.4.3-x86_64-linux) sha256=")
+      .sub(/(  rake \(13\.4\.3-x86_64-linux\) sha256=)[0-9a-f]{64}/, "\\1#{'a' * 64}")
+    _out, err, status = validate(bump_with_flip)
+    refute_predicate status, :success?
+    assert_match(/platform changed/, err)
   end
 
   def test_rejects_checksum_shaped_lines_outside_the_checksums_section

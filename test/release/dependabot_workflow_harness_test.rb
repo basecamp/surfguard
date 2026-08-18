@@ -142,6 +142,7 @@ class DependabotWorkflowHarnessTest < Minitest::Test
       wrong_tip: ->(commit) { commit["sha"] = "c" * 40 },
       author: ->(commit) { commit.dig("author")["login"] = "attacker" },
       committer: ->(commit) { commit.dig("committer")["login"] = "attacker" },
+      committer_not_github_signer: ->(commit) { commit.dig("committer")["login"] = "dependabot[bot]" },
       signature: ->(commit) { commit.dig("commit", "verification")["verified"] = false }
     }
 
@@ -252,10 +253,12 @@ class DependabotWorkflowHarnessTest < Minitest::Test
     end
 
     def valid_commit
+      # Live Dependabot commits are authored by the bot but committed by
+      # GitHub's signer (web-flow); the workflow requires exactly that shape.
       {
         "sha" => HEAD_SHA,
         "author" => { "login" => "dependabot[bot]" },
-        "committer" => { "login" => "dependabot[bot]" },
+        "committer" => { "login" => "web-flow" },
         "commit" => { "verification" => { "verified" => true } }
       }
     end

@@ -39,6 +39,9 @@ module Surfguard
       raise Error, "automatic update must change exactly one unambiguous dependency" unless changed.one?
 
       name = changed.first
+      unless base[:spec_platforms][name] == head[:spec_platforms][name]
+        raise Error, "dependency platform changed"
+      end
       from = base[:specs].fetch(name)
       to = head[:specs].fetch(name)
       raise Error, "dependency did not increase" unless to > from
@@ -94,7 +97,7 @@ module Surfguard
         raise Error, "unexpected local path source"
       end
 
-      specs, raw_versions = parse_specs(gem_section)
+      specs, raw_versions, spec_platforms = parse_specs(gem_section)
       raise Error, "lockfile has no RubyGems specs" if specs.empty?
 
       dependencies = text[/^DEPENDENCIES\n(.*?)(?=\n[A-Z][A-Z ]+\n|\z)/m, 1]
@@ -112,6 +115,7 @@ module Surfguard
         text: text,
         specs: specs,
         raw_versions: raw_versions,
+        spec_platforms: spec_platforms,
         checksums: checksums,
         direct_dependencies: direct_dependencies,
         dependencies: dependencies,
@@ -125,19 +129,22 @@ module Surfguard
     def parse_specs(text)
       specs = {}
       raw_versions = {}
+      platforms = {}
       # Bundler lockfile grammar: "name (version[-platform])", where the
       # version never contains a dash (Gem::Version#to_s), so the platform is
       # everything after the first dash. Raw versions keep the full inner
-      # string to match the CHECKSUMS spelling exactly.
-      text.scan(/^    ([A-Za-z0-9_.-]+) \((([^ ()-]+)(?:-[^ ()]+)?)\)$/).each do |name, raw, version|
+      # string to match the CHECKSUMS spelling exactly; the platform is also
+      # tracked on its own so a version bump cannot smuggle a platform flip.
+      text.scan(/^    ([A-Za-z0-9_.-]+) \((([^ ()-]+)(?:-([^ ()]+))?)\)$/).each do |name, raw, version, platform|
         raise Error, "ambiguous duplicate dependency #{name}" if specs.key?(name)
 
         specs[name] = Gem::Version.new(version)
         raw_versions[name] = raw
+        platforms[name] = platform
       rescue ArgumentError
         raise Error, "invalid dependency version for #{name}"
       end
-      [ specs, raw_versions ]
+      [ specs, raw_versions, platforms ]
     end
 
     def parse_checksums(section)
