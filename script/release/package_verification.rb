@@ -282,6 +282,13 @@ module Surfguard
           raise "dependencies #{spec.dependencies.map(&:to_s).inspect}" unless spec.dependencies.empty?
           raise "extensions #{spec.extensions.inspect}" unless spec.extensions.empty?
           raise "executables #{spec.executables.inspect}" unless spec.executables.empty?
+          raise "autorequire #{spec.autorequire.inspect}" unless spec.autorequire.nil?
+          raise "post-install message present" unless spec.post_install_message.nil?
+          raise "signing key present" unless spec.signing_key.nil?
+          raise "external requirements #{spec.requirements.inspect}" unless spec.requirements.empty?
+          unless spec.required_rubygems_version.to_s == ">= 0"
+            raise "required RubyGems #{spec.required_rubygems_version}"
+          end
 
           return unless @name == "surfguard"
 

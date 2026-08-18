@@ -10,7 +10,9 @@ class PackageMetadataCoverageTest < Minitest::Test
     _out, _err = capture_io { load File.join(ROOT, "surfguard.gemspec") }
     spec = Gem::Specification.load(File.join(ROOT, "surfguard.gemspec"))
 
-    assert_equal "0.1.3", Surfguard::VERSION
+    # Exact semver with optional RubyGems prerelease segments; asserting the
+    # format rather than the literal keeps `rake bump` transactional.
+    assert_match(/\A\d+\.\d+\.\d+(\.[a-z0-9]+)*\z/i, Surfguard::VERSION)
     assert_equal "surfguard", spec.name
     assert_equal Surfguard::VERSION, spec.version.to_s
     assert_equal %w[LICENSE README.md SECURITY.md lib/surfguard.rb lib/surfguard/version.rb], spec.files

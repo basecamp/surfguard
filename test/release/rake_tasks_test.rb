@@ -101,7 +101,8 @@ class RakeTasksTest < Minitest::Test
 
     status, output = run_rake("bump[0.2.0]", env: {
       "BUNDLE_GEMFILE" => File.join(@dir, "missing-gemfile"),
-      "BUNDLE_PATH" => File.join(@dir, "attacker-bundle-path")
+      "BUNDLE_PATH" => File.join(@dir, "attacker-bundle-path"),
+      "BUNDLER_VERSION" => "99.99.99"
     })
     assert_predicate status, :success?, -> { output }
     assert_equal "0.2.0", read_version

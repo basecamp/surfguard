@@ -399,6 +399,11 @@ class PackageVerificationTest < Minitest::Test
         spec.define_singleton_method(:require_paths) { [ "lib" ] }
       },
       /executables/ => ->(spec) { spec.executables = [ "surfguard" ] },
+      /autorequire/ => ->(spec) { spec.autorequire = "surfguard" },
+      /post-install message/ => ->(spec) { spec.post_install_message = "gotcha" },
+      /signing key/ => ->(spec) { spec.signing_key = "key.pem" },
+      /external requirements/ => ->(spec) { spec.requirements = [ "libcurl" ] },
+      /required RubyGems/ => ->(spec) { spec.required_rubygems_version = ">= 3.0" },
       /authors/ => ->(spec) { spec.authors = [ "attacker" ] },
       /summary/ => ->(spec) { spec.summary = "wrong" },
       /description/ => ->(spec) { spec.description = "wrong" },

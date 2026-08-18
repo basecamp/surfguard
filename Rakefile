@@ -53,6 +53,7 @@ end
 def clean_bundler_environment
   ENV.each_key.grep(/\ABUNDLE_/).to_h { |key| [ key, nil ] }.merge(
     "BUNDLE_IGNORE_CONFIG" => "1",
+    "BUNDLER_VERSION" => nil,
     "RUBYOPT" => nil,
     "RUBYLIB" => nil,
     "RUBYGEMS_GEMDEPS" => nil
