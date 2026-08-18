@@ -78,7 +78,7 @@ module Surfguard
       unless text.valid_encoding? && text.ascii_only? && !text.include?("\0")
         raise Error, "invalid lockfile encoding"
       end
-      if text.match?(/\A(?:GIT|PLUGIN)\n|\n(?:GIT|PLUGIN)\n/)
+      if text.match?(/(?:\A|\n)(?:GIT|PLUGIN)\n/)
         raise Error, "forbidden lockfile source section"
       end
       raise Error, "lockfile must contain exactly one GEM section" unless text.scan(/^GEM$/).one?
