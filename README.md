@@ -8,7 +8,24 @@ Surfguard resolves and classifies addresses for Ruby applications that fetch a U
 gem "surfguard"
 ```
 
-Surfguard requires Ruby 3.4.5 or newer and has zero runtime dependencies.
+Surfguard 0.2 requires Ruby 3.4.5 or newer and has zero runtime dependencies.
+
+To verify a downloaded release artifact against its repository, normal release
+workflow, and immutable tag:
+
+```sh
+gh attestation verify surfguard-X.Y.Z.gem \
+  --repo basecamp/surfguard \
+  --signer-workflow basecamp/surfguard/.github/workflows/release.yml \
+  --source-ref refs/tags/vX.Y.Z
+```
+
+If the release was completed through the documented recovery path, substitute
+`release-recovery.yml` as the signer workflow. Recovery dispatched on `main`
+has `refs/heads/main` provenance; confirm its logged tag/rebuild equality as
+described in the
+[release guide](https://github.com/basecamp/surfguard/blob/main/RELEASING.md)
+before accepting that residual case.
 
 ## APIs and policies
 

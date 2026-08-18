@@ -236,7 +236,7 @@ class DependabotValidatorTest < Minitest::Test
     cases = {
       "top-level dependency" => valid.sub("  minitest\n", "  minitest (= 6.0.6)\n"),
       "platform structure" => valid.sub("  ruby\n", "  ruby\n  arm64-darwin\n"),
-      "local path source" => valid.sub("surfguard (0.1.3)", "surfguard (0.1.4)"),
+      "local path source" => valid.sub("surfguard (0.2.0)", "surfguard (0.2.1)"),
       "outside version/checksum" => valid.sub("      base64\n", "      base64 (>= 0)\n")
     }
 
