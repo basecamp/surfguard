@@ -48,9 +48,27 @@ class DependabotWorkflowHarnessTest < Minitest::Test
         puts JSON.generate([ take.call("commits") ])
       when %r{/pulls/\d+/files\z}
         puts fixture.fetch("files").join("\n")
-      when %r{/contents/(.+)\?ref=}
+      when %r{/contents/(.+)\?ref=(.+)\z}
+        # Exact-ref fetching is the trust boundary: serve only the validator at
+        # the base SHA and the two lockfiles at their own SHAs, each with a
+        # distinguishable body the served validator itself asserts, so a
+        # workflow that fetched from the wrong ref or swapped base/head fails.
         path = Regexp.last_match(1)
-        content = path.end_with?("validate_dependabot_lockfile.rb") ? "exit 0\n" : "fixture lock\n"
+        ref = Regexp.last_match(2)
+        base_sha = "b" * 40
+        head_sha = "a" * 40
+        content = case [ path, ref ]
+        when [ ".github/scripts/validate_dependabot_lockfile.rb", base_sha ]
+          "abort 'unexpected validator arguments' unless ARGV.length == 4\n" \
+          "abort 'wrong base lockfile bytes' unless File.read(ARGV[0]) == \"base lock@#{base_sha}\\n\"\n" \
+          "abort 'wrong head lockfile bytes' unless File.read(ARGV[1]) == \"head lock@#{head_sha}\\n\"\n"
+        when [ "Gemfile.lock", base_sha ]
+          "base lock@#{base_sha}\n"
+        when [ "Gemfile.lock", head_sha ]
+          "head lock@#{head_sha}\n"
+        else
+          abort "unexpected contents fetch: #{path} at #{ref}"
+        end
         puts Base64.strict_encode64(content)
       when %r{/pulls/\d+/reviews\z}
         puts '{"id":1}'

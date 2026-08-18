@@ -33,7 +33,9 @@ module Surfguard
       raise Error, "platform structure changed" unless base[:platforms] == head[:platforms]
       raise Error, "local path source changed" unless base[:path] == head[:path]
 
-      changed = base[:specs].keys.select { |name| base[:specs][name] != head[:specs][name] }
+      # Compare raw locked strings, not Gem::Version: equivalent respellings
+      # (1.0 vs 1.0.0) and platform flips must count as changes too.
+      changed = base[:specs].keys.select { |name| base[:raw_versions][name] != head[:raw_versions][name] }
       raise Error, "automatic update must change exactly one unambiguous dependency" unless changed.one?
 
       name = changed.first
@@ -123,11 +125,15 @@ module Surfguard
     def parse_specs(text)
       specs = {}
       raw_versions = {}
-      text.scan(/^    ([A-Za-z0-9_.-]+) \(([^ ()]+)(?:-[^ ()]+)?\)$/).each do |name, version|
+      # Bundler lockfile grammar: "name (version[-platform])", where the
+      # version never contains a dash (Gem::Version#to_s), so the platform is
+      # everything after the first dash. Raw versions keep the full inner
+      # string to match the CHECKSUMS spelling exactly.
+      text.scan(/^    ([A-Za-z0-9_.-]+) \((([^ ()-]+)(?:-[^ ()]+)?)\)$/).each do |name, raw, version|
         raise Error, "ambiguous duplicate dependency #{name}" if specs.key?(name)
 
         specs[name] = Gem::Version.new(version)
-        raw_versions[name] = version
+        raw_versions[name] = raw
       rescue ArgumentError
         raise Error, "invalid dependency version for #{name}"
       end
@@ -191,7 +197,10 @@ module Surfguard
     end
 
     def normalize(text)
-      text.lines.reject { |line| line.match?(/^CHECKSUMS\n|^  [A-Za-z0-9_.-]+ \([^\n]+\) sha256=/) }
+      # Omit checksum records only where they belong — the CHECKSUMS section —
+      # so checksum-shaped lines injected elsewhere still register as change.
+      text.sub(/^CHECKSUMS\n(?:  [A-Za-z0-9_.-]+ \([^\n]+\)(?: sha256=[0-9a-f]{64})?\n)*/, "")
+        .lines
         .map { |line| line.sub(/^(    [A-Za-z0-9_.-]+) \([^\n]+\)$/, '\1 (VERSION)') }
         .join
     end

@@ -175,9 +175,15 @@ jobs:
 
           # Narrow the validate->approve window, then pin the approval itself
           # to the validated commit via the API (gh pr review has no
-          # head-binding flag). The merge is additionally pinned with
-          # --match-head-commit, and the revoke job below plus the
-          # dismiss-stale-reviews branch rule cover later head movement.
+          # head-binding flag). --auto defers the actual merge until required
+          # checks finish, so the merge boundary is enforced server-side at
+          # merge time, not by this script: --match-head-commit restricts the
+          # merge to exactly the validated head; the strict (up-to-date)
+          # required-status rule forces any base advance through a new head,
+          # which dismiss-stale-reviews strips of its approval and the revoke
+          # job strips of pending auto-merge. There is no merge queue, so no
+          # merge_group hook exists to revalidate in; these branch-rule gates
+          # are the merge-time revalidation.
           revalidate_current_pr "before approval"
           gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
             -f commit_id="$EVENT_HEAD_SHA" \

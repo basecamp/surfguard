@@ -133,6 +133,41 @@ class DependabotValidatorTest < Minitest::Test
     end
   end
 
+  def test_rejects_equivalent_version_respelling_of_a_second_dependency
+    respelled = updated("rake", "13.4.2", "13.4.3")
+      .sub("    rainbow (3.1.1)", "    rainbow (3.1.1.0)")
+    _out, err, status = validate(respelled)
+
+    refute_predicate status, :success?
+    assert_match(/exactly one/, err)
+  end
+
+  def test_parses_platform_qualified_specs_per_bundler_lockfile_grammar
+    platformed = lambda do |text|
+      text.sub("    racc (1.8.1)", "    racc (1.8.1-x86_64-linux)")
+        .sub("  racc (1.8.1) sha256=", "  racc (1.8.1-x86_64-linux) sha256=")
+    end
+    base = platformed.call(File.binread(LOCK))
+    head = platformed.call(updated("rake", "13.4.2", "13.4.3"))
+    _out, err, status = validate_pair(base, head)
+    assert_predicate status, :success?, err
+
+    platform_flip = platformed.call(File.binread(LOCK))
+    _out, err, status = validate(platform_flip)
+    refute_predicate status, :success?
+    assert_match(/did not increase/, err)
+  end
+
+  def test_rejects_checksum_shaped_lines_outside_the_checksums_section
+    injected = updated("rake", "13.4.2", "13.4.3")
+      .sub("  specs:\n    activesupport",
+        "  specs:\n  attacker (1.0.0) sha256=#{'e' * 64}\n    activesupport")
+    _out, err, status = validate(injected)
+
+    refute_predicate status, :success?
+    assert_match(/outside version\/checksum/, err)
+  end
+
   def test_rejects_wrong_ecosystem_and_missing_or_duplicate_structural_sections
     head = updated("ast", "2.4.3", "2.4.4")
     _out, err, status = validate(head, ecosystem: "npm")
