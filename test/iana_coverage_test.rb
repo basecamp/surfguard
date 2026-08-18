@@ -321,6 +321,14 @@ class IanaCoverageTest < Minitest::Test
     assert_equal "2025-10-09", Registry.registry_updated(generic, id: "unregistered")
   end
 
+  def test_registry_metadata_xml_advances_byte_cursor_through_multibyte_content
+    schema = Registry.schema("ipv4_special_use")
+    id = schema.metadata_registry_id
+
+    xml = %(<registry xmlns="#{Iana::IANA_XML_NAMESPACE}" id="#{id}"><!-- «commentaire spécial» --><ignored attr="préfixe">Adresses spéciales — 番地</ignored><updated>2025-10-09</updated></registry>)
+    assert_equal "2025-10-09", Registry.registry_updated(xml, id: schema.id)
+  end
+
   def test_registry_metadata_xml_rejects_every_token_and_structure_failure
     schema = Registry.schema("ipv4_special_use")
     root = %(<registry xmlns="#{Iana::IANA_XML_NAMESPACE}" id="#{schema.metadata_registry_id}">)

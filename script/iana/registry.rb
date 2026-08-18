@@ -389,7 +389,7 @@ module Surfguard
 
         while index < text.bytesize
           if text.getbyte(index) != 0x3c
-            finish = text.index("<", index) || text.bytesize
+            finish = text.byteindex("<", index) || text.bytesize
             content = text.byteslice(index, finish - index)
             if stack.empty?
               raise Error, "#{id}: malformed registry metadata XML" unless content.match?(/\A[\t\n\r ]*\z/)
@@ -403,21 +403,21 @@ module Surfguard
           if xml_token_at?(text, index, "<!--")
             raise Error, "#{id}: invalid registry update date" if updated_text
 
-            finish = text.index("-->", index + 4)
+            finish = text.byteindex("-->", index + 4)
             raise Error, "#{id}: malformed registry metadata XML" unless finish
 
             index = finish + 3
           elsif xml_token_at?(text, index, "<?")
             raise Error, "#{id}: invalid registry update date" if updated_text
 
-            finish = text.index("?>", index + 2)
+            finish = text.byteindex("?>", index + 2)
             raise Error, "#{id}: malformed registry metadata XML" unless finish
 
             index = finish + 2
           elsif xml_token_at?(text, index, "<![CDATA[")
             raise Error, "#{id}: malformed registry metadata XML" if stack.empty? || updated_text
 
-            finish = text.index("]]>", index + 9)
+            finish = text.byteindex("]]>", index + 9)
             raise Error, "#{id}: malformed registry metadata XML" unless finish
 
             index = finish + 3
@@ -541,7 +541,7 @@ module Surfguard
           raise Error, "#{id}: malformed registry metadata XML" unless quote == 0x22 || quote == 0x27
 
           value_start = index + 1
-          value_finish = trimmed.index(quote.chr, value_start)
+          value_finish = trimmed.byteindex(quote.chr, value_start)
           raise Error, "#{id}: malformed registry metadata XML" unless value_finish
 
           value = trimmed.byteslice(value_start, value_finish - value_start)

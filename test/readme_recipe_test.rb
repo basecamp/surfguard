@@ -223,8 +223,9 @@ class ReadmeRecipeTest < Minitest::Test
     context = OpenSSL::SSL::SSLContext.new
     context.cert = server_certificate
     context.key = server_key
-    context.servername_cb = lambda do |socket_and_hostname|
-      server_name = socket_and_hostname.last
+    # Ruby's OpenSSL invokes servername_cb with a single [socket, hostname] array.
+    context.servername_cb = lambda do |(_socket, hostname)|
+      server_name = hostname
       nil
     end
     server = Thread.new do

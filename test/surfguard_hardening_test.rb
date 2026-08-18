@@ -174,6 +174,14 @@ class SurfguardHardeningTest < Minitest::Test
     refute Surfguard.blocked_address?("2606:2800:220:1:248:1893:25c8:1946", policy: :iana_special_use)
   end
 
+  def test_strict_policy_applies_to_ipv4_addresses_embedded_in_transition_prefixes
+    %w[::ffff:0:192.31.196.1 ::ffff:0:192.52.193.1 ::ffff:0:192.175.48.1].each do |address|
+      assert Surfguard.blocked_address?(address, policy: :iana_special_use), address
+      refute Surfguard.blocked_address?(address), address
+    end
+    refute Surfguard.blocked_address?("::ffff:0:5db8:d822", policy: :iana_special_use)
+  end
+
   def test_unknown_policy_raises_argument_error_from_every_api
     calls = [
       -> { Surfguard.resolve_public_ips("example.com", policy: :unknown) },

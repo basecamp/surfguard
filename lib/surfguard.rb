@@ -152,7 +152,7 @@ module Surfguard
     return true if NAT64_LOCAL_USE.include?(ipaddr)
 
     if NAT64_WELL_KNOWN.include?(ipaddr) || IPV4_TRANSLATABLE.include?(ipaddr)
-      return disallowed_ipv4?(embedded_ipv4(ipaddr))
+      return disallowed_ipv4?(embedded_ipv4(ipaddr), policy: policy)
     end
 
     disallowed_ipv6?(ipaddr)
@@ -378,8 +378,9 @@ module Surfguard
       ranges.any? { |range| range.include?(ip) }
     end
 
-    def disallowed_ipv4?(ip)
-      ip.private? || ip.loopback? || ip.link_local? ||
+    def disallowed_ipv4?(ip, policy: :default)
+      (policy == :iana_special_use && iana_special_use?(ip)) ||
+        ip.private? || ip.loopback? || ip.link_local? ||
         DISALLOWED_IPV4.any? { |range| range.include?(ip) }
     end
 
