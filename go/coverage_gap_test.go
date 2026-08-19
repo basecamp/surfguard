@@ -60,6 +60,21 @@ func TestCheckRedirectRefusesHandCraftedHostileURLs(t *testing.T) {
 		t.Errorf("IPvFuture hop host, got %v", err)
 	}
 
+	// A bracketed authority that is not IPv6 (a name or an IPv4) must be
+	// refused, not treated as a DNS name after Hostname() strips the brackets.
+	for _, host := range []string{"[example.com]", "[127.0.0.1]", "[fe80::1%25eth0]"} {
+		request := &http.Request{URL: &url.URL{Scheme: "https", Host: host}}
+		if err := check(request, via); !errors.As(err, &violation) || violation.Reason != ReasonMalformedHost {
+			t.Errorf("bracketed non-IPv6 host %q, got %v", host, err)
+		}
+	}
+	// A legitimate bracketed IPv6 hop host still passes the bracket gate
+	// (public, so no downstream refusal either).
+	okv6 := &http.Request{URL: &url.URL{Scheme: "https", Host: "[2606:2800:220:1::1946]"}}
+	if err := check(okv6, via); err != nil {
+		t.Errorf("bracketed public IPv6 hop host must pass, got %v", err)
+	}
+
 	zoned := &http.Request{URL: &url.URL{Scheme: "https", Host: "fe80::1%eth0"}}
 	if err := check(zoned, via); !errors.As(err, &violation) || violation.Reason != ReasonMalformedHost {
 		t.Errorf("zoned hop host, got %v", err)

@@ -149,8 +149,12 @@ func TestCanonicalDialAddress(t *testing.T) {
 	// Malformed addresses fail closed before any resolver call.
 	for _, address := range []string{
 		"no-port",           // missing port
-		"[fe80::1%eth0]:80", // zone refused by normalizeHost
+		"[fe80::1%eth0]:80", // zoned bracketed literal
 		"93.184.216.34.:80", // malformed numeric host
+		"[example.com]:80",  // bracketed authority must be IPv6, not a name
+		"[v1.com]:80",       // bracketed IPvFuture
+		"[127.0.0.1]:80",    // bracketed IPv4 is malformed per RFC 3986
+		"bad%host:80",       // unbracketed host refused by normalizeHost
 	} {
 		if _, err := policy.canonicalDialAddress(address); !errors.Is(err, ErrBlocked) {
 			t.Errorf("canonicalDialAddress(%q) must refuse, got %v", address, err)

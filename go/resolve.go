@@ -160,15 +160,28 @@ func urlHost(rawURL string) (string, error) {
 }
 
 func hostOfURL(u *url.URL) (string, error) {
-	// RFC 3986 IPvFuture ("[v1.fe]") names no address family we can judge.
-	if len(u.Host) >= 2 && u.Host[0] == '[' && (u.Host[1] == 'v' || u.Host[1] == 'V') {
-		return "", &Violation{Host: u.Host, Reason: ReasonMalformedHost}
-	}
 	host := u.Hostname()
 	if host == "" {
 		return "", &Violation{Reason: ReasonMalformedHost}
 	}
+	// A bracketed authority is an IP-literal (RFC 3986). Require a valid
+	// unzoned IPv6 address rather than letting Hostname() strip the brackets
+	// and hand back a name — covers [example.com], IPvFuture [v1.fe], and
+	// bracketed IPv4. net/url rejects most of these at Parse time; this also
+	// guards hand-built *url.URL values (e.g. redirect targets) and keeps the
+	// bracket contract local.
+	if len(u.Host) > 0 && u.Host[0] == '[' && !bracketedHostIsIPv6(host) {
+		return "", &Violation{Host: u.Host, Reason: ReasonMalformedHost}
+	}
 	return host, nil
+}
+
+// bracketedHostIsIPv6 reports whether host (brackets already stripped) is a
+// valid unzoned IPv6 literal. IPv4-mapped forms are accepted here and refused
+// later by classification, matching the non-bracketed path.
+func bracketedHostIsIPv6(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Is6() && addr.Zone() == ""
 }
 
 // ResolvePublicAddrs resolves host under the default policy.

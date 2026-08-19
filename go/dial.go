@@ -87,6 +87,12 @@ func (p Policy) canonicalDialAddress(address string) (string, error) {
 	if err != nil {
 		return "", &Violation{Host: address, Reason: ReasonMalformedHost}
 	}
+	// SplitHostPort strips brackets, discarding the RFC 3986 signal that a
+	// bracketed authority must be an IPv6 literal. Re-derive it so a direct
+	// caller cannot pass "[example.com]:80" and have it resolved as a name.
+	if len(address) > 0 && address[0] == '[' && !bracketedHostIsIPv6(host) {
+		return "", &Violation{Host: host, Reason: ReasonMalformedHost}
+	}
 	normalized, err := normalizeHost(host)
 	if err != nil {
 		return "", err
