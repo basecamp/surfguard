@@ -11,6 +11,11 @@ import (
 
 // Resolver is the DNS seam used by the resolution layer. *net.Resolver
 // satisfies it; tests substitute deterministic fakes.
+//
+// The resolution layer queries "ip4" and "ip6" separately and never "ip",
+// so an implementation must honor network: a combined lookup loses whether
+// an answer came from an A or a AAAA record, and that distinction is what
+// separates an ordinary IPv4 address from a hostile IPv4-mapped AAAA.
 type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }

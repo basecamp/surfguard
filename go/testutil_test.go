@@ -3,28 +3,72 @@ package surfguard
 import (
 	"context"
 	"net/netip"
+	"slices"
 )
 
 // fakeResolver is the deterministic DNS seam: it records every query so
 // tests can assert that refused inputs never reach DNS, and its wildcard
 // answer models a wildcard/search-domain response that would launder a
 // numeric token into a public-looking record.
+//
+// Answers are split by family the way a real resolver does: 4-byte values
+// answer "ip4", everything else — including an IPv4-mapped value, which is
+// how a hostile AAAA is spelled — answers "ip6". With mapV4 set it models
+// the pure-Go resolver instead, which returns A records in mapped form.
 type fakeResolver struct {
-	answers  map[string][]netip.Addr
-	wildcard []netip.Addr
-	err      error
-	queries  []string
+	answers      map[string][]netip.Addr
+	wildcard     []netip.Addr
+	err          error
+	errByNetwork map[string]error
+	mapV4        bool
+	queries      []string
 }
 
-func (r *fakeResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+func (r *fakeResolver) LookupNetIP(_ context.Context, network, host string) ([]netip.Addr, error) {
 	r.queries = append(r.queries, host)
 	if r.err != nil {
 		return nil, r.err
 	}
-	if addrs, ok := r.answers[host]; ok {
-		return addrs, nil
+	if err, ok := r.errByNetwork[network]; ok {
+		return nil, err
 	}
-	return r.wildcard, nil
+	answer, ok := r.answers[host]
+	if !ok {
+		answer = r.wildcard
+	}
+	var family []netip.Addr
+	for _, addr := range answer {
+		if addr.Is4() != (network == "ip4") {
+			continue
+		}
+		if network == "ip4" && r.mapV4 {
+			addr = netip.AddrFrom16(addr.As16())
+		}
+		family = append(family, addr)
+	}
+	return family, nil
+}
+
+// queriedHosts returns the distinct hosts sent to DNS. Each name costs one
+// query per address family, so counting calls would count families.
+func (r *fakeResolver) queriedHosts() []string {
+	var hosts []string
+	for _, host := range r.queries {
+		if !slices.Contains(hosts, host) {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
+// crossFamilyResolver answers each network with exactly what it is told to,
+// including wrong-family values a well-behaved resolver would never return.
+type crossFamilyResolver struct {
+	byNetwork map[string][]netip.Addr
+}
+
+func (r *crossFamilyResolver) LookupNetIP(_ context.Context, network, _ string) ([]netip.Addr, error) {
+	return r.byNetwork[network], nil
 }
 
 func addrs(texts ...string) []netip.Addr {

@@ -165,8 +165,8 @@ func TestConformanceNumericLabelHostnamesStillReachDNS(t *testing.T) {
 		if err != nil || len(got) != 1 || got[0] != public {
 			t.Errorf("%q: got %v, %v; want the resolver answer", c.Input, got, err)
 		}
-		if len(resolver.queries) != 1 {
-			t.Errorf("%q: expected exactly one DNS query, got %v", c.Input, resolver.queries)
+		if hosts := resolver.queriedHosts(); len(hosts) != 1 || hosts[0] != c.Input {
+			t.Errorf("%q: expected exactly one queried host, got %v", c.Input, hosts)
 		}
 	}
 }

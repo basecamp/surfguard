@@ -17,7 +17,8 @@ const (
 // connection time. Blocked answers are filtered, so a resolvable host whose
 // every answer is blocked yields an empty slice and a nil error.
 //
-// Address literals — including legacy inet_aton spellings — are classified
+// Names are looked up per address family (see [Resolver]). Address literals
+// — including legacy inet_aton spellings — are classified
 // authoritatively without DNS. Malformed hosts return a [Violation] with
 // [ReasonMalformedHost] (where Ruby's resolve_public_ips returns [] silently;
 // Go callers check errors). An empty or invalid DNS answer returns an
@@ -100,38 +101,80 @@ func (p Policy) resolveHost(ctx context.Context, host string) ([]netip.Addr, err
 	case hostLiteral:
 		return []netip.Addr{literal}, nil
 	case hostName:
-		answers, err := p.lookup().LookupNetIP(ctx, "ip", normalized)
-		if err != nil {
-			return nil, &UnresolvableError{Host: host, Err: err}
-		}
-		valid, ok := normalizeAnswers(answers)
-		if !ok || len(valid) == 0 {
-			return nil, &UnresolvableError{Host: host}
-		}
-		return valid, nil
+		return p.lookupHost(ctx, host, normalized)
 	default:
 		return nil, &Violation{Host: host, Reason: ReasonMalformedHost}
 	}
 }
 
-// normalizeAnswers bounds, validates, and dedupes a resolver answer. One
-// invalid or zoned answer invalidates the whole lookup: a resolver that
-// produces garbage cannot be partially trusted.
-func normalizeAnswers(raw []netip.Addr) ([]netip.Addr, bool) {
-	if len(raw) > maxAddresses {
+// lookupHost queries each address family separately. A combined "ip" lookup
+// would lose whether an answer came from an A or a AAAA record, and the
+// pure-Go resolver spells an A record as the IPv4-mapped 16-byte form
+// (net.DefaultResolver.LookupNetIP(ctx, "ip", "localhost") yields
+// ::ffff:127.0.0.1 under GODEBUG=netdns=go, where cgo yields 127.0.0.1).
+// Classification refuses every mapped address as a hostile AAAA, so a
+// combined lookup would drop ordinary IPv4 answers on that backend. Asking
+// per family restores the identity: an "ip4" answer is an A record and is
+// unmapped before judgment, while a mapped "ip6" answer is a genuine hostile
+// AAAA and stays refused.
+//
+// A name with only one family makes the other lookup fail or come back
+// empty, which is normal and not an error; only a lookup that yields no
+// addresses at all is unresolvable.
+func (p Policy) lookupHost(ctx context.Context, host, normalized string) ([]netip.Addr, error) {
+	resolver := p.lookup()
+	v4, err4 := resolver.LookupNetIP(ctx, "ip4", normalized)
+	v6, err6 := resolver.LookupNetIP(ctx, "ip6", normalized)
+	if len(v4) == 0 && len(v6) == 0 {
+		err := err4
+		if err == nil {
+			err = err6
+		}
+		return nil, &UnresolvableError{Host: host, Err: err}
+	}
+	valid, ok := normalizeAnswers(v4, v6)
+	if !ok || len(valid) == 0 {
+		return nil, &UnresolvableError{Host: host}
+	}
+	return valid, nil
+}
+
+// normalizeAnswers bounds, validates, and dedupes a per-family resolver
+// answer, IPv4 before IPv6. The bound applies to the combined raw count, so
+// splitting the lookup cannot double the ceiling. One invalid, zoned, or
+// wrong-family answer invalidates the whole lookup: a resolver that produces
+// garbage cannot be partially trusted.
+func normalizeAnswers(v4, v6 []netip.Addr) ([]netip.Addr, bool) {
+	if len(v4)+len(v6) > maxAddresses {
 		return nil, false
 	}
-	answers := make([]netip.Addr, 0, len(raw))
-	seen := make(map[netip.Addr]struct{}, len(raw))
-	for _, addr := range raw {
-		if !addr.IsValid() || addr.Zone() != "" {
-			return nil, false
-		}
+	answers := make([]netip.Addr, 0, len(v4)+len(v6))
+	seen := make(map[netip.Addr]struct{}, len(v4)+len(v6))
+	add := func(addr netip.Addr) {
 		if _, dup := seen[addr]; dup {
-			continue
+			return
 		}
 		seen[addr] = struct{}{}
 		answers = append(answers, addr)
+	}
+	for _, addr := range v4 {
+		// An "ip4" answer is an A record; the mapped spelling is a
+		// representation detail of the backend, so unmap it and judge the
+		// IPv4 address it names. Anything not IPv4 in either spelling is a
+		// resolver fault.
+		if !addr.IsValid() || addr.Zone() != "" || !addr.Unmap().Is4() {
+			return nil, false
+		}
+		add(addr.Unmap())
+	}
+	for _, addr := range v6 {
+		// An "ip6" answer is a AAAA record and is judged as it stands: a
+		// mapped value here is the hostile-AAAA case and must stay mapped so
+		// classification refuses it. A 4-byte answer is a resolver fault.
+		if !addr.IsValid() || addr.Zone() != "" || addr.Is4() {
+			return nil, false
+		}
+		add(addr)
 	}
 	return answers, true
 }

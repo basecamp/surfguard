@@ -3,6 +3,7 @@ package surfguard
 import (
 	"context"
 	"errors"
+	"net"
 	"net/netip"
 	"slices"
 	"testing"
@@ -140,6 +141,153 @@ func TestMappedAAAAAnswerIsFilteredAndRefused(t *testing.T) {
 	// Even a mapped PUBLIC answer is refused in classification input.
 	if !Blocked(netip.MustParseAddr("::ffff:93.184.216.34")) {
 		t.Error("mapped public addresses are hostile AAAA records, not targets")
+	}
+}
+
+// The pure-Go resolver returns an A record as its IPv4-mapped 16-byte form.
+// Judging that raw would refuse every IPv4 answer as a hostile mapped AAAA,
+// so an ip4 answer is unmapped: both backends must classify identically.
+func TestMappedIPv4AnswersFromThePureGoResolverAreOrdinaryIPv4(t *testing.T) {
+	answer := addrs("93.184.216.34", "2606:2800:220:1::1")
+	for _, mapV4 := range []bool{false, true} {
+		resolver := &fakeResolver{
+			answers: map[string][]netip.Addr{"dual.example": answer},
+			mapV4:   mapV4,
+		}
+		policy := Policy{}.WithResolver(resolver)
+		got, err := policy.ResolvePublicAddrs(context.Background(), "dual.example")
+		if err != nil || !slices.Equal(got, answer) {
+			t.Errorf("mapV4=%v: got %v, %v; want %v", mapV4, got, err, answer)
+		}
+		if err := policy.CheckURL(context.Background(), "https://dual.example/"); err != nil {
+			t.Errorf("mapV4=%v: public dual-stack host must pass, got %v", mapV4, err)
+		}
+	}
+
+	// Unmapping an ip4 answer must not launder a blocked one.
+	resolver := &fakeResolver{
+		answers: map[string][]netip.Addr{"meta.example": addrs("169.254.169.254")},
+		mapV4:   true,
+	}
+	if err := (Policy{}).WithResolver(resolver).CheckURL(context.Background(), "https://meta.example/"); !errors.Is(err, ErrBlocked) {
+		t.Errorf("mapped metadata A record must stay blocked, got %v", err)
+	}
+
+	// A mapped value from the ip6 lookup is a genuine hostile AAAA and is
+	// judged mapped, whatever the ip4 lookup spelled.
+	hostile := netip.MustParseAddr("::ffff:93.184.216.34")
+	resolver = &fakeResolver{
+		answers: map[string][]netip.Addr{"hostile.example": {hostile}},
+		mapV4:   true,
+	}
+	got, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "hostile.example")
+	if err != nil || len(got) != 0 {
+		t.Errorf("hostile mapped AAAA must be filtered, got %v, %v", got, err)
+	}
+}
+
+// The fake seam models the backends; this asserts against the real one, so
+// the seam cannot drift from what net.Resolver actually returns. Under
+// GODEBUG=netdns=go an A record arrives IPv4-mapped, which before the
+// per-family lookup made ResolvePublicAddrs drop every IPv4 answer.
+func TestRealResolverIPv4AnswersSurviveClassification(t *testing.T) {
+	ctx := context.Background()
+	raw, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", "localhost")
+	if err != nil || len(raw) == 0 {
+		t.Skipf("no IPv4 answer for localhost on this host: %v, %v", raw, err)
+	}
+	got, err := Policy{}.AllowLoopback().ResolvePublicAddrs(ctx, "localhost")
+	if err != nil {
+		t.Fatalf("localhost must resolve, got %v", err)
+	}
+	if !slices.ContainsFunc(got, func(addr netip.Addr) bool { return addr.Is4() && addr.IsLoopback() }) {
+		t.Errorf("want an IPv4 loopback answer, got %v (raw %v)", got, raw)
+	}
+}
+
+func TestSingleFamilyNamesResolveThroughTheOtherFamilysFailure(t *testing.T) {
+	// A v4-only name: the AAAA lookup errors (as real resolvers do) and the
+	// A answer still stands — and the reverse.
+	for _, c := range []struct {
+		label   string
+		answer  []netip.Addr
+		failing string
+	}{
+		{"IPv4 only", addrs("93.184.216.34"), "ip6"},
+		{"IPv6 only", addrs("2606:2800:220:1::1"), "ip4"},
+	} {
+		resolver := &fakeResolver{
+			answers:      map[string][]netip.Addr{"single.example": c.answer},
+			errByNetwork: map[string]error{c.failing: errors.New("no such host")},
+		}
+		got, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "single.example")
+		if err != nil || !slices.Equal(got, c.answer) {
+			t.Errorf("%s: got %v, %v; want %v", c.label, got, err, c.answer)
+		}
+	}
+
+	// Both families failing is unresolvable, and the reported cause is the
+	// IPv4 error when there is one, the IPv6 error otherwise.
+	v4Err, v6Err := errors.New("v4 down"), errors.New("v6 down")
+	for _, c := range []struct {
+		byNetwork map[string]error
+		want      error
+	}{
+		{map[string]error{"ip4": v4Err, "ip6": v6Err}, v4Err},
+		{map[string]error{"ip6": v6Err}, v6Err},
+	} {
+		resolver := &fakeResolver{errByNetwork: c.byNetwork}
+		_, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "gone.example")
+		if !errors.Is(err, ErrUnresolvable) || !errors.Is(err, c.want) {
+			t.Errorf("%v: want ErrUnresolvable wrapping %v, got %v", c.byNetwork, c.want, err)
+		}
+	}
+}
+
+func TestWrongFamilyAnswersInvalidateTheLookup(t *testing.T) {
+	// A resolver that answers ip4 with a real IPv6 address, or ip6 with a
+	// 4-byte one, is faulty — not partially trustworthy.
+	for label, byNetwork := range map[string]map[string][]netip.Addr{
+		"IPv6 from ip4":  {"ip4": addrs("2606:2800:220:1::1")},
+		"IPv4 from ip6":  {"ip6": addrs("93.184.216.34")},
+		"zoned from ip4": {"ip4": {netip.MustParseAddr("::ffff:93.184.216.34").WithZone("eth0")}},
+	} {
+		resolver := &crossFamilyResolver{byNetwork: byNetwork}
+		_, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "bogus.example")
+		if !errors.Is(err, ErrUnresolvable) {
+			t.Errorf("%s: want ErrUnresolvable, got %v", label, err)
+		}
+	}
+}
+
+func TestAddressCapAppliesToTheCombinedAnswer(t *testing.T) {
+	// Splitting the lookup must not double the ceiling: 128 + 129 raw
+	// answers exceed the 256 cap even though neither family does.
+	v4 := make([]netip.Addr, 128)
+	base := netip.MustParseAddr("11.0.0.0").As4()
+	for i := range v4 {
+		raw := base
+		raw[2], raw[3] = byte(i>>8), byte(i)
+		v4[i] = netip.AddrFrom4(raw)
+	}
+	v6 := make([]netip.Addr, 129)
+	base6 := netip.MustParseAddr("2606:2800:220:1::").As16()
+	for i := range v6 {
+		raw := base6
+		raw[14], raw[15] = byte(i>>8), byte(i)
+		v6[i] = netip.AddrFrom16(raw)
+	}
+	resolver := &fakeResolver{answers: map[string][]netip.Addr{"flood.example": append(slices.Clone(v4), v6...)}}
+	_, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "flood.example")
+	if !errors.Is(err, ErrUnresolvable) {
+		t.Errorf("257 combined answers must invalidate the lookup, got %v", err)
+	}
+
+	// One fewer is admitted, proving the cap is the combined count.
+	resolver = &fakeResolver{answers: map[string][]netip.Addr{"flood.example": append(slices.Clone(v4), v6[:128]...)}}
+	got, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "flood.example")
+	if err != nil || len(got) != 256 {
+		t.Errorf("256 combined answers must be admitted; got %d, %v", len(got), err)
 	}
 }
 
