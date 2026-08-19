@@ -52,7 +52,7 @@ return adjusted copies and accumulate.
 | Classification | `Blocked(netip.Addr)`, `BlockedHost(string)` | pure verdicts; invalid, zoned, and malformed input fails closed; never DNS |
 | Resolution | `ResolvePublicAddrs(ctx, host)`, `CheckURL(ctx, url)` | every answer judged; each address family looked up separately; legacy numeric spellings classified without DNS; malformed numeric tokens refused outright |
 | Enforcement | `Control`, `ControlContext`, `DialContext` | the literal address of every connect attempt is judged at the moment of connection — no check-to-use gap; `DialContext` canonicalizes legacy-numeric literals before the resolver can see them |
-| Client | `Transport()`, `Client()`, `CheckRedirect(next)` | real `*http.Transport`/`*http.Client`; `Proxy: nil`; per-hop scheme, downgrade, host, and (via dial) address+port re-validation |
+| Client | `Transport()`, `RoundTripper()`, `Client()`, `CheckRedirect(next)` | real `*http.Transport`/`*http.Client`; `Proxy: nil`; malformed request URLs refused before the transport; per-hop scheme, downgrade, host, and (via dial) address+port re-validation |
 
 `DialContext` gives the numeric-host defense at dial time too: a legacy
 spelling like `2130706433` or `0x7f000001` is canonicalized to its address
@@ -69,6 +69,17 @@ IPv4 answers on that backend. An `ip4` answer is therefore unmapped and judged
 as the IPv4 it names, while an `ip6` answer is judged as it stands, so a mapped
 value there is still refused. A `WithResolver` implementation must honor the
 network argument for the same reason.
+
+`Client()` checks the shape of every request URL — the initial one and each
+redirect hop — before the transport sees it, because that is the only layer
+where the evidence still exists: an `*http.Transport` dials
+`req.URL.Hostname()`, which has already stripped the brackets from an
+authority. Nor can this be left to `net/url`, whose IP-literal validation
+tightened *after* Go 1.23, the module floor: there `url.Parse` accepts
+`http://[example.com]/` and reports the host as the ordinary name
+`example.com`. `Transport()` still returns a real `*http.Transport` for
+callers who want to configure one, but it judges addresses rather than URL
+shape — assemble a custom client from `RoundTripper()` to keep both.
 
 `CheckRedirect(next)` runs the caller's `next` callback first; any non-nil
 result it returns — including `http.ErrUseLastResponse` — stops the follow

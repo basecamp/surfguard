@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,6 +29,96 @@ func TestClientDefaultsAreHardened(t *testing.T) {
 	if Client().Transport == nil {
 		t.Error("package-level Client delegates")
 	}
+	if _, ok := client.Transport.(roundTripper); !ok {
+		t.Errorf("client must validate URL shape before the transport, got %T", client.Transport)
+	}
+}
+
+// A bracketed authority is an IP-literal (RFC 3986). net/url tightened its
+// IP-literal validation after Go 1.23 — this module's floor — where
+// url.Parse still accepts "http://[example.com]/" and reports the host as the
+// ordinary name "example.com". The transport then dials req.URL.Hostname(),
+// which has already dropped the brackets, so nothing downstream can tell the
+// difference: on Go 1.23 this fetched a bracketed name before the round
+// tripper began checking URL shape.
+func TestClientRefusesBracketedNonIPv6Authorities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// AllowLoopback and AllowAllPorts would admit this fixture by address and
+	// port, so anything fetched here is the malformed host getting through,
+	// not a policy decision.
+	client := Policy{}.AllowLoopback().AllowAllPorts().Client()
+	for _, host := range []string{"[localhost]", "[example.com]", "[v1.com]", "[127.0.0.1]"} {
+		rawURL := "http://" + host + ":" + port + "/"
+		response, err := client.Get(rawURL)
+		if err == nil {
+			response.Body.Close()
+			t.Errorf("%s must be refused, got %s", rawURL, response.Status)
+			continue
+		}
+		// Where the toolchain's url.Parse accepts the spelling, the refusal
+		// has to be ours; where it rejects it, the request never starts.
+		if _, parseErr := url.Parse(rawURL); parseErr == nil && !errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: want ErrBlocked, got %v", rawURL, err)
+		}
+	}
+
+	// The same fixture by its ordinary authority still fetches, so the check
+	// refuses the bracket spelling and nothing more.
+	response, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("unbracketed fixture must still fetch, got %v", err)
+	}
+	response.Body.Close()
+}
+
+// url.Parse is not the only way a request URL is built: a caller can
+// construct one directly, and every toolchain carries it to the transport
+// unexamined. Drive the round tripper with hand-built requests so the check
+// is exercised regardless of how strict the toolchain's parser is.
+func TestRoundTripperValidatesHandBuiltRequestURLs(t *testing.T) {
+	transport := Policy{}.AllowLoopback().AllowAllPorts().RoundTripper()
+	for _, host := range []string{
+		"[example.com]",    // bracketed name
+		"[v1.fe]",          // IPvFuture
+		"[127.0.0.1]",      // bracketed IPv4
+		"[fe80::1%25eth0]", // zoned literal
+		"",                 // no host at all
+	} {
+		request := &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "http", Host: host}}
+		_, err := transport.RoundTrip(request)
+		violationReason(t, err, ReasonMalformedHost)
+	}
+
+	// A nil request or URL fails closed rather than panicking.
+	if _, err := transport.RoundTrip(nil); !errors.Is(err, ErrBlocked) {
+		t.Errorf("nil request must fail closed, got %v", err)
+	}
+	if _, err := transport.RoundTrip(&http.Request{Method: http.MethodGet}); !errors.Is(err, ErrBlocked) {
+		t.Errorf("nil URL must fail closed, got %v", err)
+	}
+}
+
+func TestRoundTripperForwardsCloseIdleConnections(t *testing.T) {
+	// (*http.Client).CloseIdleConnections reaches the transport only through
+	// this method, so the wrapper must forward it.
+	closer := &idleCloseRecorder{}
+	roundTripper{next: closer}.CloseIdleConnections()
+	if !closer.closed {
+		t.Error("CloseIdleConnections must reach the wrapped transport")
+	}
+	// A transport without the method is simply left alone.
+	roundTripper{next: plainRoundTripper{}}.CloseIdleConnections()
+
+	client := Policy{}.Client()
+	client.CloseIdleConnections()
 }
 
 func TestStrictClientRefusesLoopbackFixtureAndAllowLoopbackFetchesIt(t *testing.T) {

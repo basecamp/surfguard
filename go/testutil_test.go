@@ -2,6 +2,7 @@ package surfguard
 
 import (
 	"context"
+	"net/http"
 	"net/netip"
 	"slices"
 )
@@ -70,6 +71,17 @@ type crossFamilyResolver struct {
 func (r *crossFamilyResolver) LookupNetIP(_ context.Context, network, _ string) ([]netip.Addr, error) {
 	return r.byNetwork[network], nil
 }
+
+// idleCloseRecorder and plainRoundTripper stand in for transports with and
+// without CloseIdleConnections.
+type idleCloseRecorder struct{ closed bool }
+
+func (r *idleCloseRecorder) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+func (r *idleCloseRecorder) CloseIdleConnections()                           { r.closed = true }
+
+type plainRoundTripper struct{}
+
+func (plainRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
 
 func addrs(texts ...string) []netip.Addr {
 	out := make([]netip.Addr, len(texts))
