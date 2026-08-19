@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "description": "Address literals the default policy admits; per-policy verdicts because the iana_special_use policy refuses advertised transition and service infrastructure.",
+  "cases": [
+    { "label": "public IPv4", "input": "93.184.216.34",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "public IPv6", "input": "2606:2800:220:1:248:1893:25c8:1946",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "octet below link-local", "input": "169.253.255.255",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "octet above link-local", "input": "169.255.0.0",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "below carrier-grade NAT", "input": "100.63.255.255",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "above carrier-grade NAT", "input": "100.128.0.0",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" } },
+    { "label": "AMT service", "input": "2001:3::1",
+      "policies": { "default": "allowed", "iana_special_use": "blocked" },
+      "note": "Globally-reachable carve-out inside 2001::/23; still an IANA special-purpose registration" },
+    { "label": "AS112 service", "input": "2001:4:112::1",
+      "policies": { "default": "allowed", "iana_special_use": "blocked" } },
+    { "label": "direct AS112 service", "input": "2620:4f:8000::1",
+      "policies": { "default": "allowed", "iana_special_use": "blocked" } },
+    { "label": "NAT64 WKP wrapping a public IPv4", "input": "64:ff9b::5db8:d822",
+      "policies": { "default": "allowed", "iana_special_use": "blocked" },
+      "note": "Embedded 93.184.216.34 is public, so the default admits it; 64:ff9b::/96 itself is a special-purpose registration" },
+    { "label": "SIIT wrapping a public IPv4", "input": "::ffff:0:5db8:d822",
+      "policies": { "default": "allowed", "iana_special_use": "allowed" },
+      "note": "::ffff:0:0:0/96 is not a special-purpose registration; the embedded 93.184.216.34 is public under both policies" }
+  ]
+}

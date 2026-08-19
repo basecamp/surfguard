@@ -11,8 +11,9 @@ class WorkflowPolicyTest < Minitest::Test
   DEPENDABOT = File.join(ROOT, ".github/workflows/dependabot-auto-merge.yml")
   ALLOWED_ACTION_REPOSITORIES = %w[
     actions/attest actions/checkout actions/dependency-review-action
-    actions/download-artifact actions/upload-artifact dependabot/fetch-metadata
-    github/codeql-action rubygems/configure-rubygems-credentials ruby/setup-ruby
+    actions/download-artifact actions/setup-go actions/upload-artifact
+    dependabot/fetch-metadata github/codeql-action
+    rubygems/configure-rubygems-credentials ruby/setup-ruby
     softprops/action-gh-release zizmorcore/zizmor-action
   ].freeze
 
@@ -337,14 +338,14 @@ class WorkflowPolicyTest < Minitest::Test
   def test_ci_fan_in_has_an_explicit_closed_skip_policy
     ci = workflow(CI).fetch("jobs")
     fan_in = ci.fetch("ci")
-    expected = %w[test lint lint-actions dependency-review package-build package platforms musl iana-drift codeql]
+    expected = %w[test lint lint-actions dependency-review package-build package platforms musl iana-drift codeql go-test go-lint go-fuzz]
     assert_equal expected, fan_in.fetch("needs")
     assert_equal "always()", fan_in.fetch("if")
     fan_in_scripts = fan_in.fetch("steps").map { |step| [ step["if"], step["run"] ] }
     assert fan_in_scripts.any? { |condition, run| condition&.include?("failure") && condition.include?("cancelled") && run == "exit 1" }
     assert fan_in_scripts.any? { |condition, run| condition&.include?("needs.iana-drift.result == 'skipped'") && run == "exit 1" }
     assert fan_in_scripts.any? { |condition, run| condition&.include?("needs.dependency-review.result == 'skipped'") && run == "exit 1" }
-    required = %w[test lint lint-actions package-build package platforms musl codeql]
+    required = %w[test lint lint-actions package-build package platforms musl codeql go-test go-lint go-fuzz]
     skip_condition = fan_in_scripts.filter_map { |condition, run| condition if run == "exit 1" }.find do |condition|
       required.all? { |name| condition.include?("needs.#{name}.result == 'skipped'") }
     end

@@ -1,0 +1,3 @@
+# Go fuzz corpus files are byte-exact test inputs; CRLF conversion on
+# Windows checkouts would corrupt them.
+go/testdata/fuzz/** -text

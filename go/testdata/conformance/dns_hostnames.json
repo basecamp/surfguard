@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "description": "Hostnames that legitimately reach DNS despite numeric-looking labels: none is a complete legacy IPv4 spelling, so refusing them would break real domains.",
+  "cases": [
+    { "input": "123.example" },
+    { "input": "123.example." },
+    { "input": "0xfoo.example" },
+    { "input": "0x7f000001.example" },
+    { "input": "127.example" },
+    { "input": "127.0.0.1.example" },
+    { "input": "1.2.3.4.5" },
+    { "input": "example.com." }
+  ]
+}
