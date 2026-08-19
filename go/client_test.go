@@ -106,6 +106,46 @@ func TestRoundTripperValidatesHandBuiltRequestURLs(t *testing.T) {
 	}
 }
 
+// http.Transport IDNA-normalizes a non-ASCII authority before it reaches
+// DialContext — U+24DB "ⓛocalhost" maps to "localhost" — so the spelling the
+// policy judged is not the host that gets dialed. The module does no IDN
+// conversion by construction, so a non-ASCII host must be refused outright
+// rather than silently folded into another one.
+func TestClientRefusesNonASCIIAuthorities(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := Policy{}.AllowLoopback().AllowAllPorts().Client()
+	for _, host := range []string{"ⓛocalhost", "lÖcalhost", "localhost。"} {
+		rawURL := "http://" + host + ":" + port + "/"
+		response, err := client.Get(rawURL)
+		if err == nil {
+			response.Body.Close()
+			t.Errorf("%s must be refused, got %s", rawURL, response.Status)
+			continue
+		}
+		var violation *Violation
+		if !errors.As(err, &violation) || violation.Reason != ReasonMalformedHost {
+			t.Errorf("%s: want a malformed-host Violation, got %v", rawURL, err)
+		}
+	}
+
+	// The punycode spelling is ASCII and is judged like any other name, so
+	// the refusal is of the encoding, not of internationalized hosts.
+	if _, err := url.Parse("http://xn--0caa.example/"); err != nil {
+		t.Fatalf("punycode host must parse: %v", err)
+	}
+	if _, err := hostOfURL(&url.URL{Scheme: "http", Host: "xn--0caa.example"}); err != nil {
+		t.Errorf("punycode host must pass the URL gate, got %v", err)
+	}
+}
+
 func TestRoundTripperForwardsCloseIdleConnections(t *testing.T) {
 	// (*http.Client).CloseIdleConnections reaches the transport only through
 	// this method, so the wrapper must forward it.

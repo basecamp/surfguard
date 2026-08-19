@@ -71,11 +71,7 @@ func (p Policy) checkRedirectHost(req *http.Request) error {
 	if err != nil {
 		return err
 	}
-	normalized, err := normalizeHost(host)
-	if err != nil {
-		return err
-	}
-	kind, literal := classifyHost(normalized)
+	kind, literal := classifyHost(host)
 	switch kind {
 	case hostMalformed:
 		return &Violation{Host: host, Reason: ReasonMalformedHost}

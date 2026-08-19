@@ -152,7 +152,10 @@ verdicts in both implementations. Deliberate divergences:
 
 No proxy support: `Transport()` sets `Proxy: nil` because a proxied request
 would have the proxy's address judged instead of the target's. No IDN
-conversion: punycode-encode before calling. No response-size limits or
+conversion: punycode-encode before calling — a non-ASCII host is refused as
+malformed rather than folded, because `http.Transport` IDNA-normalizes one
+before dialing (`ⓛocalhost` becomes `localhost`) and the host judged would not
+be the host dialed. No response-size limits or
 request deadlines beyond the client's 30s timeout: those remain caller
 policy.
 

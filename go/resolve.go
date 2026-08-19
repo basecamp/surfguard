@@ -216,7 +216,13 @@ func hostOfURL(u *url.URL) (string, error) {
 	if len(u.Host) > 0 && u.Host[0] == '[' && !bracketedHostIsIPv6(host) {
 		return "", &Violation{Host: u.Host, Reason: ReasonMalformedHost}
 	}
-	return host, nil
+	// Apply the same host gate the resolution layer uses — ASCII-only,
+	// bounded, no NUL, no zone identifier — so every URL entry point refuses
+	// the same spellings. It matters most for a non-ASCII authority:
+	// http.Transport IDNA-normalizes one before dialing (U+24DB "ⓛocalhost"
+	// becomes "localhost"), so a host left unchecked here reaches the dialer
+	// as a different host than the one judged.
+	return normalizeHost(host)
 }
 
 // bracketedHostIsIPv6 reports whether host (brackets already stripped) is a
