@@ -50,7 +50,7 @@ return adjusted copies and accumulate.
 | Layer | API | Guarantee |
 |---|---|---|
 | Classification | `Blocked(netip.Addr)`, `BlockedHost(string)` | pure verdicts; invalid, zoned, and malformed input fails closed; never DNS |
-| Resolution | `ResolvePublicAddrs(ctx, host)`, `CheckURL(ctx, url)` | every answer judged; legacy numeric spellings classified without DNS; malformed numeric tokens refused outright |
+| Resolution | `ResolvePublicAddrs(ctx, host)`, `CheckURL(ctx, url)` | every answer judged; each address family looked up separately; legacy numeric spellings classified without DNS; malformed numeric tokens refused outright |
 | Enforcement | `Control`, `ControlContext`, `DialContext` | the literal address of every connect attempt is judged at the moment of connection — no check-to-use gap; `DialContext` canonicalizes legacy-numeric literals before the resolver can see them |
 | Client | `Transport()`, `Client()`, `CheckRedirect(next)` | real `*http.Transport`/`*http.Client`; `Proxy: nil`; per-hop scheme, downgrade, host, and (via dial) address+port re-validation |
 
@@ -59,6 +59,16 @@ spelling like `2130706433` or `0x7f000001` is canonicalized to its address
 (`127.0.0.1`) and judged, never handed to a resolver that a wildcard answer
 could hijack — so `Client().Get("http://2130706433/")` is refused exactly as
 `CheckURL` would refuse it.
+
+Names are resolved per address family — `"ip4"` and `"ip6"`, never `"ip"`. A
+combined lookup loses whether an answer came from an A or a AAAA record, and
+the pure-Go resolver spells an A record as its IPv4-mapped form
+(`::ffff:127.0.0.1` where cgo gives `127.0.0.1`); since classification refuses
+every mapped address as a hostile AAAA, a combined lookup would drop ordinary
+IPv4 answers on that backend. An `ip4` answer is therefore unmapped and judged
+as the IPv4 it names, while an `ip6` answer is judged as it stands, so a mapped
+value there is still refused. A `WithResolver` implementation must honor the
+network argument for the same reason.
 
 `CheckRedirect(next)` runs the caller's `next` callback first; any non-nil
 result it returns — including `http.ErrUseLastResponse` — stops the follow
