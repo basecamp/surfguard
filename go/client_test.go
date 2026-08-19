@@ -122,7 +122,13 @@ func TestClientRefusesNonASCIIAuthorities(t *testing.T) {
 	}
 
 	client := Policy{}.AllowLoopback().AllowAllPorts().Client()
-	for _, host := range []string{"ⓛocalhost", "lÖcalhost", "localhost。"} {
+	for _, host := range []string{
+		"ⓛocalhost",  // U+24DB folds to "l"
+		"lÖcalhost",  // encoded as punycode
+		"localhost。", // U+3002 folds to "."
+		"１２７.０.０.１",  // full-width digits fold to a dotted-quad literal
+		"２１３０７０６４３３", // ...and to a legacy inet_aton spelling of it
+	} {
 		rawURL := "http://" + host + ":" + port + "/"
 		response, err := client.Get(rawURL)
 		if err == nil {
