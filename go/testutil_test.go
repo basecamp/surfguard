@@ -72,6 +72,25 @@ func (r *crossFamilyResolver) LookupNetIP(_ context.Context, network, _ string) 
 	return r.byNetwork[network], nil
 }
 
+// cancelingResolver models a context that ends partway through resolution:
+// it answers the IPv4 lookup normally and cancels on whichever family is
+// named, so a partial answer is available when the context is already done.
+type cancelingResolver struct {
+	answer   []netip.Addr
+	cancel   context.CancelFunc
+	cancelOn string
+}
+
+func (r *cancelingResolver) LookupNetIP(ctx context.Context, network, _ string) ([]netip.Addr, error) {
+	if network == r.cancelOn {
+		r.cancel()
+	}
+	if network == "ip4" {
+		return r.answer, nil
+	}
+	return nil, ctx.Err()
+}
+
 // idleCloseRecorder and plainRoundTripper stand in for transports with and
 // without CloseIdleConnections.
 type idleCloseRecorder struct{ closed bool }

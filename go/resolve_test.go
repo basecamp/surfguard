@@ -244,6 +244,38 @@ func TestSingleFamilyNamesResolveThroughTheOtherFamilysFailure(t *testing.T) {
 	}
 }
 
+// Resolving per family means a context can end between the two lookups. The
+// IPv4 answer alone is an incomplete picture of the host, so it must not
+// become a verdict: approving on A records whose AAAA records were never seen
+// is exactly the mixed-answer case CheckURL exists to refuse.
+func TestCanceledContextFailsTheLookupDespiteAPartialAnswer(t *testing.T) {
+	for _, cancelOn := range []string{"ip4", "ip6"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		resolver := &cancelingResolver{
+			answer:   addrs("93.184.216.34"),
+			cancel:   cancel,
+			cancelOn: cancelOn,
+		}
+		policy := Policy{}.WithResolver(resolver)
+
+		err := policy.CheckURL(ctx, "https://partial.example/")
+		if err == nil {
+			t.Errorf("cancel on %s: a canceled lookup must not return a verdict", cancelOn)
+		}
+		if !errors.Is(err, ErrUnresolvable) || !errors.Is(err, context.Canceled) {
+			t.Errorf("cancel on %s: want ErrUnresolvable wrapping context.Canceled, got %v", cancelOn, err)
+		}
+		if errors.Is(err, ErrBlocked) {
+			t.Errorf("cancel on %s: cancellation is retryable, not a policy refusal", cancelOn)
+		}
+
+		if _, err := policy.ResolvePublicAddrs(ctx, "partial.example"); !errors.Is(err, ErrUnresolvable) {
+			t.Errorf("cancel on %s: ResolvePublicAddrs must fail too, got %v", cancelOn, err)
+		}
+		cancel()
+	}
+}
+
 func TestWrongFamilyAnswersInvalidateTheLookup(t *testing.T) {
 	// A resolver that answers ip4 with a real IPv6 address, or ip6 with a
 	// 4-byte one, is faulty — not partially trustworthy.

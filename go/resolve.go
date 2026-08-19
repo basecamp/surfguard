@@ -124,7 +124,17 @@ func (p Policy) resolveHost(ctx context.Context, host string) ([]netip.Addr, err
 func (p Policy) lookupHost(ctx context.Context, host, normalized string) ([]netip.Addr, error) {
 	resolver := p.lookup()
 	v4, err4 := resolver.LookupNetIP(ctx, "ip4", normalized)
+	// A context that ends between the two lookups must not yield a verdict:
+	// one family's answer alone is an incomplete picture of the host, and
+	// treating it as the whole answer would approve a host on its A records
+	// while its AAAA records were never seen.
+	if err := ctx.Err(); err != nil {
+		return nil, &UnresolvableError{Host: host, Err: err}
+	}
 	v6, err6 := resolver.LookupNetIP(ctx, "ip6", normalized)
+	if err := ctx.Err(); err != nil {
+		return nil, &UnresolvableError{Host: host, Err: err}
+	}
 	if len(v4) == 0 && len(v6) == 0 {
 		err := err4
 		if err == nil {
