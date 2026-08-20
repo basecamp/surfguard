@@ -198,6 +198,41 @@ func TestClientRefusesNonHTTPSchemesOnTheInitialRequest(t *testing.T) {
 	}
 }
 
+// A syntactically malformed host must be refused with a typed violation
+// rather than by net/http's own Host-header validation, which would be
+// outside the ErrBlocked family. The refusal comes from the dial gate's
+// classifyHost rather than from the round tripper: net/http validates the
+// Host header only when writing the request, which is after DialContext. This
+// pins that ordering, since it is what makes a second classification pass in
+// the round tripper unnecessary.
+func TestMalformedASCIIHostsAreRefusedWithATypedViolation(t *testing.T) {
+	client := Policy{}.AllowLoopback().AllowAllPorts().Client()
+	for _, host := range []string{
+		"bad host.example",  // space
+		"bad\nhost.example", // newline — the header-smuggling spelling
+		"a\rb.example",      // carriage return
+		"host\t.example",    // tab
+		"my_host.internal",  // underscore is not an LDH label
+		"host..example",     // empty label
+		"-lead.example",     // leading hyphen
+	} {
+		// Hand-built: url.Parse rejects most of these before a client sees them.
+		request := &http.Request{
+			Method: http.MethodGet,
+			URL:    &url.URL{Scheme: "http", Host: host},
+			Header: http.Header{},
+		}
+		_, err := client.Do(request)
+		var violation *Violation
+		if !errors.As(err, &violation) || violation.Reason != ReasonMalformedHost {
+			t.Errorf("%q: want a malformed-host Violation, got %v", host, err)
+		}
+		if !errors.Is(err, ErrBlocked) {
+			t.Errorf("%q: refusal must be in the ErrBlocked family, got %v", host, err)
+		}
+	}
+}
+
 func TestRoundTripperForwardsCloseIdleConnections(t *testing.T) {
 	// (*http.Client).CloseIdleConnections reaches the transport only through
 	// this method, so the wrapper must forward it.
