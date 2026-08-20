@@ -313,7 +313,12 @@ jobs:
           "$(go env GOPATH)/bin/staticcheck" ./...
       - name: govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          # v1.1.4 panics parsing a go1.27 source tree ("unexpected expr:
+          # *ast.KeyValueExpr"). Unlike staticcheck this one has a release that
+          # understands the new toolchain, so scan with the real stable
+          # toolchain rather than pinning GOTOOLCHAIN — the point of this step
+          # is to judge what CI actually builds with.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           "$(go env GOPATH)/bin/govulncheck" ./...
       - name: Coverage gate (100% of the library package)
         run: |
