@@ -92,3 +92,35 @@ func TestUnresolvableWrappingKeepsTheMessageFixed(t *testing.T) {
 		t.Error("family survives further wrapping")
 	}
 }
+
+// A Resolver is caller-supplied code, so one may apply its own policy and
+// return ErrBlocked. Carrying that into this chain would make a single error
+// match both families and collapse retry-versus-deactivate, so the cause is
+// dropped from the chain — but kept on the field.
+func TestAResolverCauseCannotDragErrBlockedIntoTheUnresolvableFamily(t *testing.T) {
+	for label, cause := range map[string]error{
+		"the sentinel itself": ErrBlocked,
+		"a wrapped sentinel":  fmt.Errorf("resolver policy: %w", ErrBlocked),
+		"a Violation":         &Violation{Host: "target.example", Reason: ReasonBlockedAddr},
+	} {
+		err := &UnresolvableError{Host: "target.example", Err: cause}
+		if !errors.Is(err, ErrUnresolvable) {
+			t.Errorf("%s: must stay unresolvable, got %v", label, err)
+		}
+		if errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: must not join the blocked family — a failed lookup is not a refusal", label)
+		}
+		if err.Err != cause {
+			t.Errorf("%s: the cause must stay reachable on the field", label)
+		}
+		if err.Error() != ErrUnresolvable.Error() {
+			t.Errorf("%s: message must stay fixed, got %q", label, err.Error())
+		}
+	}
+
+	// An ordinary cause is still part of the chain.
+	inner := errors.New("i/o timeout")
+	if err := (&UnresolvableError{Err: inner}); !errors.Is(err, inner) {
+		t.Error("an ordinary resolver cause must stay reachable through errors.Is")
+	}
+}

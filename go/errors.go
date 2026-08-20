@@ -123,8 +123,17 @@ type UnresolvableError struct {
 
 func (u *UnresolvableError) Error() string { return ErrUnresolvable.Error() }
 
+// Unwrap exposes [ErrUnresolvable] and the underlying resolver cause.
+//
+// A cause that itself matches [ErrBlocked] is deliberately left out of the
+// chain: a [Resolver] is caller-supplied code, and one that applies its own
+// policy could return that sentinel. Carrying it here would make a single
+// error match both families at once and collapse the retry-versus-deactivate
+// distinction they exist to draw — a caller that deactivates targets on
+// ErrBlocked would deactivate one whose lookup merely failed. The cause stays
+// reachable through the Err field either way.
 func (u *UnresolvableError) Unwrap() []error {
-	if u.Err == nil {
+	if u.Err == nil || errors.Is(u.Err, ErrBlocked) {
 		return []error{ErrUnresolvable}
 	}
 	return []error{ErrUnresolvable, u.Err}
