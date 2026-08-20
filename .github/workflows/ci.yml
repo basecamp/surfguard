@@ -299,6 +299,15 @@ jobs:
           go mod tidy
           git diff --exit-code
       - name: staticcheck
+        env:
+          # staticcheck lags new Go majors: it cannot decode the export data of
+          # a toolchain released after it ("export data version N is greater
+          # than maximum supported version M"), which broke every run the day
+          # go1.27 became stable. Analyze with the newest toolchain the pinned
+          # release supports rather than following stable, and keep the rest of
+          # this job — and the whole go-test matrix — on stable so the new
+          # toolchain is still exercised. Raise both together.
+          GOTOOLCHAIN: go1.26.6
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
           "$(go env GOPATH)/bin/staticcheck" ./...
