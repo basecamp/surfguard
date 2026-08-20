@@ -218,7 +218,7 @@ func TestSingleFamilyNamesResolveThroughTheOtherFamilysFailure(t *testing.T) {
 	} {
 		resolver := &fakeResolver{
 			answers:      map[string][]netip.Addr{"single.example": c.answer},
-			errByNetwork: map[string]error{c.failing: errors.New("no such host")},
+			errByNetwork: map[string]error{c.failing: notFoundError()},
 		}
 		got, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "single.example")
 		if err != nil || !slices.Equal(got, c.answer) {
@@ -226,9 +226,9 @@ func TestSingleFamilyNamesResolveThroughTheOtherFamilysFailure(t *testing.T) {
 		}
 	}
 
-	// Both families failing is unresolvable, and the reported cause is the
-	// IPv4 error when there is one, the IPv6 error otherwise.
-	v4Err, v6Err := errors.New("v4 down"), errors.New("v6 down")
+	// Both families definitively absent is unresolvable, and the reported
+	// cause is the IPv4 error when there is one, the IPv6 error otherwise.
+	v4Err, v6Err := notFoundError(), notFoundError()
 	for _, c := range []struct {
 		byNetwork map[string]error
 		want      error
@@ -240,6 +240,42 @@ func TestSingleFamilyNamesResolveThroughTheOtherFamilysFailure(t *testing.T) {
 		_, err := Policy{}.WithResolver(resolver).ResolvePublicAddrs(context.Background(), "gone.example")
 		if !errors.Is(err, ErrUnresolvable) || !errors.Is(err, c.want) {
 			t.Errorf("%v: want ErrUnresolvable wrapping %v, got %v", c.byNetwork, c.want, err)
+		}
+	}
+}
+
+// "This family holds no records" and "we could not find out" are different
+// facts. Only the first permits judging a host on the other family: a timeout
+// or SERVFAIL leaves it unknown whether that family held an address that
+// would have been refused, and approving on the answers that did arrive is
+// the same incomplete verdict that a canceled context produces.
+func TestIndefiniteFamilyFailureIsUnresolvableEvenWithTheOtherFamilyAnswering(t *testing.T) {
+	timeout := &net.DNSError{Err: "i/o timeout", Name: "half.example", IsTimeout: true}
+	servfail := errors.New("server misbehaving")
+
+	for label, failure := range map[string]error{
+		"timeout":  timeout,
+		"servfail": servfail,
+	} {
+		for _, failing := range []string{"ip4", "ip6"} {
+			resolver := &fakeResolver{
+				answers: map[string][]netip.Addr{
+					"half.example": addrs("93.184.216.34", "2606:2800:220:1::1"),
+				},
+				errByNetwork: map[string]error{failing: failure},
+			}
+			policy := Policy{}.WithResolver(resolver)
+
+			err := policy.CheckURL(context.Background(), "https://half.example/")
+			if !errors.Is(err, ErrUnresolvable) || !errors.Is(err, failure) {
+				t.Errorf("%s on %s: want ErrUnresolvable wrapping the failure, got %v", label, failing, err)
+			}
+			if errors.Is(err, ErrBlocked) {
+				t.Errorf("%s on %s: an unexamined family is retryable, not a refusal", label, failing)
+			}
+			if _, err := policy.ResolvePublicAddrs(context.Background(), "half.example"); !errors.Is(err, ErrUnresolvable) {
+				t.Errorf("%s on %s: ResolvePublicAddrs must fail too, got %v", label, failing, err)
+			}
 		}
 	}
 }
@@ -355,8 +391,8 @@ func TestCheckURLLiteralHostsSkipDNS(t *testing.T) {
 	if err := policy.CheckURL(context.Background(), "http://93.184.216.34/"); err != nil {
 		t.Errorf("public literal must pass, got %v", err)
 	}
-	if len(resolver.queries) != 0 {
-		t.Errorf("literal URLs must not reach DNS: %v", resolver.queries)
+	if len(resolver.queriedHosts()) != 0 {
+		t.Errorf("literal URLs must not reach DNS: %v", resolver.queriedHosts())
 	}
 }
 
@@ -377,8 +413,8 @@ func TestCheckURLMalformedInputs(t *testing.T) {
 			t.Errorf("%q: want malformed-host Violation, got %v", rawURL, err)
 		}
 	}
-	if len(resolver.queries) != 0 {
-		t.Errorf("malformed URLs must not reach DNS: %v", resolver.queries)
+	if len(resolver.queriedHosts()) != 0 {
+		t.Errorf("malformed URLs must not reach DNS: %v", resolver.queriedHosts())
 	}
 }
 

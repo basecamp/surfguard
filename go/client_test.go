@@ -152,6 +152,41 @@ func TestClientRefusesNonASCIIAuthorities(t *testing.T) {
 	}
 }
 
+// The scheme gate applies to the initial request, not only to redirect hops.
+// Left to http.Transport, an ftp:// or file:// request fails with its generic
+// "unsupported protocol scheme" error, which is outside the ErrBlocked family
+// the refusal contract promises.
+func TestClientRefusesNonHTTPSchemesOnTheInitialRequest(t *testing.T) {
+	client := Policy{}.AllowLoopback().AllowAllPorts().Client()
+	for _, rawURL := range []string{
+		"ftp://example.com/payload",
+		"file:///etc/passwd",
+		"gopher://example.com:70/1",
+	} {
+		response, err := client.Get(rawURL)
+		if err == nil {
+			response.Body.Close()
+			t.Errorf("%s must be refused, got %s", rawURL, response.Status)
+			continue
+		}
+		var violation *Violation
+		if !errors.As(err, &violation) || violation.Reason != ReasonScheme {
+			t.Errorf("%s: want a scheme Violation, got %v", rawURL, err)
+		}
+		if !errors.Is(err, ErrBlocked) {
+			t.Errorf("%s: refusal must be in the ErrBlocked family, got %v", rawURL, err)
+		}
+	}
+
+	// The gate is on the scheme alone, so case does not matter and the
+	// ordinary schemes still pass through.
+	for _, scheme := range []string{"http", "HTTP", "https", "HttpS"} {
+		if err := schemeAllowed(scheme); err != nil {
+			t.Errorf("%s must be allowed, got %v", scheme, err)
+		}
+	}
+}
+
 func TestRoundTripperForwardsCloseIdleConnections(t *testing.T) {
 	// (*http.Client).CloseIdleConnections reaches the transport only through
 	// this method, so the wrapper must forward it.

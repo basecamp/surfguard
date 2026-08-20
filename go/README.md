@@ -52,7 +52,7 @@ return adjusted copies and accumulate.
 | Classification | `Blocked(netip.Addr)`, `BlockedHost(string)` | pure verdicts; invalid, zoned, and malformed input fails closed; never DNS |
 | Resolution | `ResolvePublicAddrs(ctx, host)`, `CheckURL(ctx, url)` | every answer judged; each address family looked up separately; legacy numeric spellings classified without DNS; malformed numeric tokens refused outright |
 | Enforcement | `Control`, `ControlContext`, `DialContext` | the literal address of every connect attempt is judged at the moment of connection — no check-to-use gap; `DialContext` canonicalizes legacy-numeric literals before the resolver can see them |
-| Client | `Transport()`, `RoundTripper()`, `Client()`, `CheckRedirect(next)` | real `*http.Transport`/`*http.Client`; `Proxy: nil`; malformed request URLs refused before the transport; per-hop scheme, downgrade, host, and (via dial) address+port re-validation |
+| Client | `Transport()`, `RoundTripper()`, `Client()`, `CheckRedirect(next)` | real `*http.Transport`/`*http.Client`; `Proxy: nil`; malformed hosts and non-http(s) schemes refused before the transport, on the initial request and every hop; per-hop downgrade, host, and (via dial) address+port re-validation |
 
 `DialContext` gives the numeric-host defense at dial time too: a legacy
 spelling like `2130706433` or `0x7f000001` is canonicalized to its address
@@ -67,8 +67,20 @@ the pure-Go resolver spells an A record as its IPv4-mapped form
 every mapped address as a hostile AAAA, a combined lookup would drop ordinary
 IPv4 answers on that backend. An `ip4` answer is therefore unmapped and judged
 as the IPv4 it names, while an `ip6` answer is judged as it stands, so a mapped
-value there is still refused. A `WithResolver` implementation must honor the
-network argument for the same reason.
+value there is still refused. The two queries are issued concurrently, as a
+combined lookup does internally, so splitting them costs no extra round trip.
+
+A verdict is only formed from a complete picture of the host. A family may be
+missing, but only definitively — no error, or a lookup reporting that the
+records do not exist. A timeout, SERVFAIL, or a context that ends
+mid-resolution leaves it unknown whether that family held an address worth
+refusing, so the host is reported unresolvable rather than judged on the other
+family alone.
+
+A `WithResolver` implementation must therefore honor the network argument, be
+safe for concurrent use, and report an absent family as a `*net.DNSError` with
+`IsNotFound` (or an empty answer with a nil error) so it is distinguishable
+from a failure.
 
 `Client()` checks the shape of every request URL — the initial one and each
 redirect hop — before the transport sees it, because that is the only layer

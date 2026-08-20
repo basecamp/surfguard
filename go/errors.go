@@ -112,7 +112,7 @@ func (v *Violation) Unwrap() error { return ErrBlocked }
 // UnresolvableError reports a host whose lookup returned no usable
 // addresses. Its Error text is fixed; the underlying resolver error is
 // reachable only through the Err field or errors.Is/As, never through the
-// message (resolver errors embed attacker-influencable detail).
+// message (resolver errors embed attacker-controlled detail).
 type UnresolvableError struct {
 	// Host is the host that could not be resolved.
 	Host string

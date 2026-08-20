@@ -16,6 +16,15 @@ import (
 // so an implementation must honor network: a combined lookup loses whether
 // an answer came from an A or a AAAA record, and that distinction is what
 // separates an ordinary IPv4 address from a hostile IPv4-mapped AAAA.
+//
+// The two queries are issued concurrently, so an implementation must be safe
+// for concurrent use by multiple goroutines (*net.Resolver is).
+//
+// Report a family that holds no records as a *net.DNSError with IsNotFound
+// set, or as an empty answer with a nil error. Any other error is read as an
+// indefinite failure — the family's addresses are unknown rather than absent
+// — and makes the whole lookup unresolvable, because a host must not be
+// judged on one family while the other went unexamined.
 type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }

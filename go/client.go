@@ -53,6 +53,9 @@ func (r roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, &Violation{Reason: ReasonMalformedHost}
 	}
+	if err := schemeAllowed(req.URL.Scheme); err != nil {
+		return nil, err
+	}
 	if _, err := hostOfURL(req.URL); err != nil {
 		return nil, err
 	}

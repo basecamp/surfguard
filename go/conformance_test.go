@@ -91,8 +91,8 @@ func TestConformanceLegacyNumericSpellingsSkipDNSAndClassify(t *testing.T) {
 			t.Errorf("%s (%s): unexpected error %v", c.Label, c.Input, err)
 			continue
 		}
-		if len(resolver.queries) != 0 {
-			t.Errorf("%s (%s): sent to DNS: %v", c.Label, c.Input, resolver.queries)
+		if len(resolver.queriedHosts()) != 0 {
+			t.Errorf("%s (%s): sent to DNS: %v", c.Label, c.Input, resolver.queriedHosts())
 		}
 		canonical := netip.MustParseAddr(c.Canonical)
 		if c.Blocked {
@@ -129,8 +129,8 @@ func TestConformanceMalformedNumericHostsRefusedWithoutDNS(t *testing.T) {
 			if !errors.Is(err, ErrBlocked) {
 				t.Errorf("%s: %q: refusal must be in the ErrBlocked family", name, c.Input)
 			}
-			if len(resolver.queries) != 0 {
-				t.Errorf("%s: %q: sent to DNS: %v", name, c.Input, resolver.queries)
+			if len(resolver.queriedHosts()) != 0 {
+				t.Errorf("%s: %q: sent to DNS: %v", name, c.Input, resolver.queriedHosts())
 			}
 			if !policy.BlockedHost(c.Input) {
 				t.Errorf("%s: %q: BlockedHost = false", name, c.Input)
@@ -151,7 +151,7 @@ func TestConformanceFullWidthPrefixesRemainValidLiterals(t *testing.T) {
 		if err != nil || len(got) != 1 || got[0] != netip.MustParseAddr(want) {
 			t.Errorf("%q: got %v, %v; want [%s]", host, got, err, want)
 		}
-		if len(resolver.queries) != 0 {
+		if len(resolver.queriedHosts()) != 0 {
 			t.Errorf("%q: sent to DNS", host)
 		}
 	}

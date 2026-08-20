@@ -2,9 +2,11 @@ package surfguard
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/netip"
 	"slices"
+	"sync"
 )
 
 // fakeResolver is the deterministic DNS seam: it records every query so
@@ -16,17 +18,22 @@ import (
 // answer "ip4", everything else — including an IPv4-mapped value, which is
 // how a hostile AAAA is spelled — answers "ip6". With mapV4 set it models
 // the pure-Go resolver instead, which returns A records in mapped form.
+// The two family lookups run concurrently, so the recorder is mutex-guarded.
 type fakeResolver struct {
 	answers      map[string][]netip.Addr
 	wildcard     []netip.Addr
 	err          error
 	errByNetwork map[string]error
 	mapV4        bool
-	queries      []string
+
+	mu      sync.Mutex
+	queries []string
 }
 
 func (r *fakeResolver) LookupNetIP(_ context.Context, network, host string) ([]netip.Addr, error) {
+	r.mu.Lock()
 	r.queries = append(r.queries, host)
+	r.mu.Unlock()
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -53,6 +60,8 @@ func (r *fakeResolver) LookupNetIP(_ context.Context, network, host string) ([]n
 // queriedHosts returns the distinct hosts sent to DNS. Each name costs one
 // query per address family, so counting calls would count families.
 func (r *fakeResolver) queriedHosts() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var hosts []string
 	for _, host := range r.queries {
 		if !slices.Contains(hosts, host) {
@@ -70,6 +79,12 @@ type crossFamilyResolver struct {
 
 func (r *crossFamilyResolver) LookupNetIP(_ context.Context, network, _ string) ([]netip.Addr, error) {
 	return r.byNetwork[network], nil
+}
+
+// notFoundError is what a resolver returns for a family that definitively
+// holds no records — the ordinary single-family host.
+func notFoundError() error {
+	return &net.DNSError{Err: "no such host", Name: "single.example", IsNotFound: true}
 }
 
 // cancelingResolver models a context that ends partway through resolution:

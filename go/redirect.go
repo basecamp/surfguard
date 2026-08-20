@@ -48,14 +48,28 @@ func (p Policy) CheckRedirect(next func(req *http.Request, via []*http.Request) 
 		if req == nil || req.URL == nil {
 			return &Violation{Reason: ReasonMalformedHost}
 		}
-		scheme := strings.ToLower(req.URL.Scheme)
-		if scheme != "http" && scheme != "https" {
-			return &Violation{Reason: ReasonScheme}
+		if err := schemeAllowed(req.URL.Scheme); err != nil {
+			return err
 		}
+		scheme := strings.ToLower(req.URL.Scheme)
 		if strings.EqualFold(sourceScheme, "https") && scheme == "http" {
 			return &Violation{Reason: ReasonRedirectDowngrade}
 		}
 		return p.checkRedirectHost(req)
+	}
+}
+
+// schemeAllowed gates the transport-level schemes the policy speaks for. It
+// applies to the initial request as well as every redirect hop: refusing a
+// scheme only on hops would leave the first request answered by
+// http.Transport's own "unsupported protocol scheme" error, which is outside
+// the [ErrBlocked] family the refusal contract promises.
+func schemeAllowed(scheme string) error {
+	switch strings.ToLower(scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return &Violation{Reason: ReasonScheme}
 	}
 }
 

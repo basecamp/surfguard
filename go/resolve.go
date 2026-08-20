@@ -2,6 +2,8 @@ package surfguard
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/netip"
 	"net/url"
 )
@@ -118,22 +120,35 @@ func (p Policy) resolveHost(ctx context.Context, host string) ([]netip.Addr, err
 // unmapped before judgment, while a mapped "ip6" answer is a genuine hostile
 // AAAA and stays refused.
 //
-// A name with only one family makes the other lookup fail or come back
-// empty, which is normal and not an error; only a lookup that yields no
-// addresses at all is unresolvable.
+// The two lookups run concurrently, as a combined "ip" lookup does
+// internally, so splitting them costs no extra round trip.
+//
+// A verdict is only ever formed from a complete picture of the host. A family
+// may be missing, but only definitively: no error, or a lookup that says the
+// records do not exist. A timeout, SERVFAIL, or any other indefinite failure
+// leaves it unknown whether that family had addresses worth refusing, so the
+// host is reported unresolvable rather than judged on the other family alone.
 func (p Policy) lookupHost(ctx context.Context, host, normalized string) ([]netip.Addr, error) {
 	resolver := p.lookup()
+	var v6 []netip.Addr
+	var err6 error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		v6, err6 = resolver.LookupNetIP(ctx, "ip6", normalized)
+	}()
 	v4, err4 := resolver.LookupNetIP(ctx, "ip4", normalized)
-	// A context that ends between the two lookups must not yield a verdict:
-	// one family's answer alone is an incomplete picture of the host, and
-	// treating it as the whole answer would approve a host on its A records
-	// while its AAAA records were never seen.
+	<-done
+
+	// A context that ends mid-resolution must not yield a verdict either: the
+	// answers in hand are whatever arrived before the caller gave up.
 	if err := ctx.Err(); err != nil {
 		return nil, &UnresolvableError{Host: host, Err: err}
 	}
-	v6, err6 := resolver.LookupNetIP(ctx, "ip6", normalized)
-	if err := ctx.Err(); err != nil {
-		return nil, &UnresolvableError{Host: host, Err: err}
+	for _, err := range []error{err4, err6} {
+		if !definitiveAnswer(err) {
+			return nil, &UnresolvableError{Host: host, Err: err}
+		}
 	}
 	if len(v4) == 0 && len(v6) == 0 {
 		err := err4
@@ -147,6 +162,19 @@ func (p Policy) lookupHost(ctx context.Context, host, normalized string) ([]neti
 		return nil, &UnresolvableError{Host: host}
 	}
 	return valid, nil
+}
+
+// definitiveAnswer reports whether a per-family lookup result settles what
+// that family holds. Success settles it, and so does a resolver saying the
+// records do not exist — that is the ordinary single-family host. Every other
+// failure is indefinite: the family may hold addresses that would have been
+// refused, and none of them were seen.
+func definitiveAnswer(err error) bool {
+	if err == nil {
+		return true
+	}
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
 }
 
 // normalizeAnswers bounds, validates, and dedupes a per-family resolver
