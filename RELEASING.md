@@ -108,12 +108,25 @@ independently and has **no publish pipeline**: tagging is the release.
 2. Push it. No workflow runs (see the tag ruleset note below); the module
    becomes fetchable the first time anyone requests it.
 3. Verify from outside the repository, not from the checkout — a working tree
-   proves nothing about what was published:
+   proves nothing about what was published. A throwaway *directory* is not
+   enough either: the module cache is global, so once you have fetched the
+   version even once, `go get` is answered from that cache without contacting
+   anything. Give the check its own `GOMODCACHE`, and pin the public proxy and
+   checksum database so it exercises the path a stranger would take rather
+   than whatever `GOPRIVATE`/`GOPROXY` your shell happens to carry:
 
    ```sh
+   cache="$(mktemp -d)"
    cd "$(mktemp -d)" && go mod init verify
-   go get github.com/basecamp/surfguard/go@vX.Y.Z
+   GOMODCACHE="$cache" GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org \
+     go get github.com/basecamp/surfguard/go@vX.Y.Z
+   GOMODCACHE="$cache" go clean -modcache   # cache entries are read-only
    ```
+
+   It must print `go: downloading …`. To confirm the check is honest rather
+   than cached, re-run it with `GOPROXY=off` and a fresh `cache`: that must
+   fail with `module lookup disabled by GOPROXY=off`. If it succeeds, the
+   cache is warm and the verification proved nothing.
 
 **Major version 2 and beyond.** Go requires the major suffix in the module
 path itself, so v2 is not just a different tag: `go/go.mod` must declare
