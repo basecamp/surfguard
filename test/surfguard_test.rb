@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
+require_relative "support/conformance"
 require "resolv"
 if ENV["SURFGUARD_INSTALLED_SUITE"]
   require "surfguard"
@@ -10,129 +11,24 @@ end
 
 class SurfguardTest < Minitest::Test
   # --- classification: the full policy matrix, checked as execution -----------
+  # The matrices live in the language-neutral corpus under conformance/; the
+  # tests here only bind them to the Ruby implementation.
 
-  BLOCKED = {
-    # IPv4 private / special-use
-    "link-local (instance metadata)"     => "169.254.169.254",
-    "link-local (container credentials)" => "169.254.170.2",
-    "loopback"                           => "127.0.0.1",
-    "private 10/8"                        => "10.0.0.1",
-    "private 172.16/12"                  => "172.16.0.1",
-    "private 192.168/16"                 => "192.168.1.1",
-    "carrier-grade NAT"                  => "100.64.0.1",
-    "this network"                       => "0.0.0.0",
-    "Azure wire server"                  => "168.63.129.16",
-    "IETF protocol assignments"          => "192.0.0.1",
-    "6to4 relay anycast"                 => "192.88.99.1",
-    "benchmarking"                       => "198.18.0.1",
-    "TEST-NET-1"                         => "192.0.2.1",
-    "multicast"                          => "224.0.0.1",
-    "reserved"                           => "240.0.0.1",
-    "broadcast"                          => "255.255.255.255",
-    # IPv6 native
-    "IPv6 loopback"                      => "::1",
-    "IPv6 unspecified"                   => "::",
-    "IPv6 unique-local (ULA)"            => "fd00::1",
-    "IPv6 IMDSv6"                        => "fd00:ec2::254",
-    "IPv6 link-local"                    => "fe80::1",
-    "IPv6 site-local (deprecated)"       => "fec0::1",
-    "IPv6 multicast"                     => "ff02::1",
-    "IPv6 discard-only"                  => "100::1",
-    "IPv6 dummy destination"             => "100:0:0:1::1",
-    "IPv6 Teredo"                        => "2001:0:a9fe:a9fe::",
-    "IPv6 PCP anycast"                   => "2001:1::1",
-    "IPv6 TURN anycast"                  => "2001:1::2",
-    "IPv6 DNS-SD SRP anycast"            => "2001:1::3",
-    "IPv6 unallocated IETF assignment"   => "2001:1::4",
-    "IPv6 deprecated ORCHID"             => "2001:10::1",
-    "IPv6 ORCHIDv2"                      => "2001:20::1",
-    "IPv6 DET overlay identifier"        => "2001:30::1",
-    "IPv6 documentation"                 => "2001:db8::1",
-    "IPv6 expanded documentation"        => "3fff::1",
-    "IPv6 SRv6 SID"                      => "5f00::1",
-    # IPv4-in-IPv6 encapsulations
-    "IPv4-mapped link-local"             => "::ffff:169.254.169.254",
-    "IPv4-compatible link-local"         => "::169.254.169.254",
-    "SIIT loopback"                      => "::ffff:0:7f00:1",
-    "SIIT link-local"                    => "::ffff:0:a9fe:a9fe",
-    "NAT64 WKP link-local"               => "64:ff9b::a9fe:a9fe",
-    "NAT64 WKP loopback"                 => "64:ff9b::7f00:1",
-    "NAT64 local-use (public target)"    => "64:ff9b:1::5db8:d822", # decodes to a PUBLIC IPv4 (93.184.216.34), still refused whole
-    "6to4 link-local"                    => "2002:a9fe:a9fe::",
-    "6to4 loopback"                      => "2002:7f00:1::"
-  }.freeze
+  BLOCKED = Conformance.cases("blocked")
+    .to_h { |entry| [ entry.fetch("label"), entry.fetch("input") ] }.freeze
 
-  ALLOWED = {
-    "public IPv4"                          => "93.184.216.34",
-    "public IPv6"                          => "2606:2800:220:1:248:1893:25c8:1946",
-    "octet below link-local"               => "169.253.255.255",
-    "octet above link-local"               => "169.255.0.0",
-    "below carrier-grade NAT"              => "100.63.255.255",
-    "above carrier-grade NAT"              => "100.128.0.0",
-    "AMT service"                           => "2001:3::1",
-    "AS112 service"                         => "2001:4:112::1",
-    "direct AS112 service"                  => "2620:4f:8000::1",
-    "NAT64 WKP wrapping a public IPv4"     => "64:ff9b::5db8:d822", # 93.184.216.34
-    "SIIT wrapping a public IPv4"          => "::ffff:0:5db8:d822"
-  }.freeze
+  ALLOWED = Conformance.cases("allowed")
+    .to_h { |entry| [ entry.fetch("label"), entry.fetch("input") ] }.freeze
 
-  LEGACY_NUMERIC_BLOCKED = {
-    "single-integer loopback"     => "2130706433",
-    "short loopback"              => "127.1",
-    "hex loopback"                => "0x7f000001",
-    # Leading-zero dotted forms are platform-defined by the connection parser;
-    # the cross-platform differential corpus below covers them.
-    "single zero"                 => "0",
-    "octal zero"                  => "00",
-    "hex zero"                    => "0x0",
-    "single-integer link-local"   => "2852039166",
-    "hex link-local"              => "0xa9fea9fe"
-  }.freeze
+  LEGACY_NUMERIC_BLOCKED = Conformance.cases("legacy_numeric")
+    .select { |entry| entry.fetch("blocked") }
+    .to_h { |entry| [ entry.fetch("label"), entry.fetch("input") ] }.freeze
 
-  MALFORMED_NUMERIC_HOSTS = %w[
-    127.0.0.1.
-    127.1.
-    2130706433.
-    0x7f000001.
-    168.63.129.16.
-    93.184.216.34.
-    .127.0.0.1
-    127..1
-    127.0.0.1%0
-    127.0.0.1..
-    127...1
-    .1
-    1..
-    01.02.03.04.
-    0X7F000001.
-    0x7f.0.0.1.
-    0x7f..1
-    127.0.0.1%lo
-    127.0.0.1%25lo
-    127.0.0.1/33
-    127.0.0.1/-1
-    127.0.0.1/foo
-    127.1/8
-    2130706433/32
-    %127.0.0.1
-    /127.0.0.1
-    //127.0.0.1
-    %%127.0.0.1
-    /%127.0.0.1
-    %127.0.0.1%lo
-    /127.0.0.1/32
-    //127.0.0.1/
-  ].freeze
+  MALFORMED_NUMERIC_HOSTS = Conformance.cases("malformed_numeric_hosts")
+    .map { |entry| entry.fetch("input") }.freeze
 
-  NON_HOST_PREFIXES = %w[
-    0.0.0.0/0
-    ::/0
-    ::1/127
-    127.0.0.1/0
-    ::1/64
-    169.254.169.254/8
-    10.0.0.1/6
-  ].freeze
+  NON_HOST_PREFIXES = Conformance.cases("non_host_prefixes")
+    .map { |entry| entry.fetch("input") }.freeze
 
   BLOCKED.each do |label, address|
     define_method("test_blocks_#{label.gsub(/\W+/, '_')}") do
@@ -145,6 +41,19 @@ class SurfguardTest < Minitest::Test
     define_method("test_allows_#{label.gsub(/\W+/, '_')}") do
       refute Surfguard.blocked_address?(IPAddr.new(address)),
         "expected #{label} (#{address}) to be allowed"
+    end
+  end
+
+  def test_conformance_corpus_verdicts_hold_under_both_policies
+    %w[boundaries blocked allowed].each do |file|
+      Conformance.cases(file).each do |entry|
+        label, input = entry.fetch_values("label", "input")
+        entry.fetch("policies").each do |policy, verdict|
+          assert_equal verdict == "blocked",
+            Surfguard.blocked_address?(input, policy: policy.to_sym),
+            "#{file}: expected #{label} (#{input}) to be #{verdict} under the #{policy} policy"
+        end
+      end
     end
   end
 
@@ -303,6 +212,7 @@ class SurfguardTest < Minitest::Test
   end
 
   def test_legacy_numeric_public_address_is_classified_and_skips_dns
+    entry = Conformance.cases("legacy_numeric").find { |candidate| !candidate.fetch("blocked") }
     original = Resolv.method(:getaddresses)
     dns_queries = []
     Resolv.define_singleton_method(:getaddresses) do |host|
@@ -310,8 +220,8 @@ class SurfguardTest < Minitest::Test
       [ "169.254.169.254" ]
     end
 
-    assert_equal [ "93.184.216.34" ], Surfguard.resolve_public_ips("1572395042")
-    assert Surfguard.resolvable_public_ip?("http://1572395042/")
+    assert_equal [ entry.fetch("canonical") ], Surfguard.resolve_public_ips(entry.fetch("input"))
+    assert Surfguard.resolvable_public_ip?("http://#{entry.fetch("input")}/")
     assert_empty dns_queries
   ensure
     Resolv.define_singleton_method(:getaddresses, original)
@@ -381,16 +291,7 @@ class SurfguardTest < Minitest::Test
   end
 
   def test_numeric_label_hostnames_still_reach_dns
-    names = %w[
-      123.example
-      123.example.
-      0xfoo.example
-      0x7f000001.example
-      127.example
-      127.0.0.1.example
-      1.2.3.4.5
-      example.com.
-    ]
+    names = Conformance.cases("dns_hostnames").map { |entry| entry.fetch("input") }
 
     stub_getaddresses(names.to_h { |name| [ name, [ "93.184.216.34" ] ] }) do
       names.each do |name|

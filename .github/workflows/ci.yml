@@ -241,8 +241,131 @@ jobs:
       - run: ruby script/generate_iana_data.rb --check
       - run: ruby script/check_iana_drift.rb
 
+  go-test:
+    name: "Go ${{ matrix.go }} (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        # 1.23 is the module floor; stable proves the current toolchain.
+        go: [ "1.23.x", "stable" ]
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ matrix.go }}
+          # Zero dependencies means no go.sum for the cache key to hash.
+          cache: false
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  go-lint:
+    name: Go lint, coverage, generated tables
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - name: Generated IANA tables match the checked-in snapshots
+        run: go run ./generate -check
+      - name: Assert zero dependencies
+        run: |
+          test ! -f go.sum || { echo "go.sum exists: the module grew a dependency"; exit 1; }
+          ! grep -E '^require' go.mod || { echo "go.mod grew a require directive"; exit 1; }
+      - name: go mod tidy leaves no diff
+        run: |
+          go mod tidy
+          git diff --exit-code
+      - name: staticcheck
+        env:
+          # staticcheck lags new Go majors: it cannot decode the export data of
+          # a toolchain released after it ("export data version N is greater
+          # than maximum supported version M"), which broke every run the day
+          # go1.27 became stable. Analyze with the newest toolchain the pinned
+          # release supports rather than following stable, and keep the rest of
+          # this job — and the whole go-test matrix — on stable so the new
+          # toolchain is still exercised. Raise both together.
+          GOTOOLCHAIN: go1.26.6
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+          "$(go env GOPATH)/bin/staticcheck" ./...
+      - name: govulncheck
+        run: |
+          # v1.1.4 panics parsing a go1.27 source tree ("unexpected expr:
+          # *ast.KeyValueExpr"). Unlike staticcheck this one has a release that
+          # understands the new toolchain, so scan with the real stable
+          # toolchain rather than pinning GOTOOLCHAIN — the point of this step
+          # is to judge what CI actually builds with.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: Coverage gate (100% of the library package)
+        run: |
+          # The surfguard library package is held at 100%; the go/generate
+          # maintainer tool is covered by its own tests (run in go-test) apart
+          # from its main() shell, so it is not part of this exact-match gate.
+          go test -coverprofile=coverage.out .
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ { print $3 }')"
+          echo "total statement coverage: ${total}"
+          test "${total}" = "100.0%" || { echo "coverage gate requires 100.0%"; exit 1; }
+      - name: Module is self-contained (isolated copy, no repo parent)
+        run: |
+          # Prove the module needs nothing beneath the repo root: copy go/ to a
+          # scratch dir with no ../conformance or ../script, and run the suite
+          # and the generator there. The drift tests skip (mirror authoritative)
+          # and everything else must pass, matching a downloaded module zip.
+          tmp="$(mktemp -d)"
+          cp -R . "$tmp/surfguard-go"
+          cd "$tmp/surfguard-go"
+          go test ./...
+          go run ./generate -check
+
+  go-fuzz:
+    name: Go fuzz smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Fuzz each target briefly (checked-in corpora run in go-test)
+        run: |
+          for target in FuzzBlocked FuzzLegacyIPv4Parser FuzzClassifyHost; do
+            go test -run=NONE -fuzz="^${target}$" -fuzztime=30s .
+          done
+
   codeql:
-    name: CodeQL
+    name: "CodeQL (${{ matrix.language }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -250,13 +373,32 @@ jobs:
       # Repository default setup owns SARIF uploads. This independently runs
       # the same pinned analyzer as a required CI fan-in job without creating
       # an incompatible second code-scanning configuration.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: ruby
+            build-mode: none
+          # The Go module lives at go/; manual build-mode traces `go build`
+          # there so the analyzer sees the whole package.
+          - language: go
+            build-mode: manual
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache: false
       - uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
-          languages: ruby
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - if: matrix.language == 'go'
+        working-directory: go
+        run: go build ./...
       - uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           upload: never
@@ -268,7 +410,7 @@ jobs:
     name: CI
     if: always()
     timeout-minutes: 15
-    needs: [ test, lint, lint-actions, dependency-review, package-build, package, platforms, musl, iana-drift, codeql ]
+    needs: [ test, lint, lint-actions, dependency-review, package-build, package, platforms, musl, iana-drift, codeql, go-test, go-lint, go-fuzz ]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -282,7 +424,7 @@ jobs:
         if: needs.dependency-review.result == 'skipped' && github.event_name == 'pull_request'
         run: exit 1
       - name: Reject every other skipped required job
-        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.package-build.result == 'skipped' || needs.package.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped'
+        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.package-build.result == 'skipped' || needs.package.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped' || needs.go-test.result == 'skipped' || needs.go-lint.result == 'skipped' || needs.go-fuzz.result == 'skipped'
         run: exit 1
       - name: All green
         run: echo "All required jobs succeeded (or were legitimately skipped)."

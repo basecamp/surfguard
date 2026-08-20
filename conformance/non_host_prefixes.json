@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "description": "Network prefixes: refused everywhere, never normalized to a host address. Only full-width prefixes (/32 IPv4, /128 IPv6) denote host addresses; classification treats these as blocked (fail closed) and resolution refuses them without DNS.",
+  "cases": [
+    { "input": "0.0.0.0/0" },
+    { "input": "::/0" },
+    { "input": "::1/127" },
+    { "input": "127.0.0.1/0" },
+    { "input": "::1/64" },
+    { "input": "169.254.169.254/8" },
+    { "input": "10.0.0.1/6" }
+  ]
+}

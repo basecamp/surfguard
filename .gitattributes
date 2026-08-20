@@ -1,0 +1,14 @@
+# Check every text file out with LF on every platform. Git for Windows
+# defaults to core.autocrlf=true, which would rewrite line endings in the
+# working tree; several checks compare bytes against a file on disk — the
+# IANA table generator's -check mode renders LF and compares it to
+# go/policy_iana.go, and the conformance/IANA drift tests byte-compare their
+# testdata mirrors — so a CRLF checkout fails them for a difference that does
+# not exist in the repository. Nothing here is committed with CRLF, so this
+# changes checkout behavior only.
+* text=auto eol=lf
+
+# Go fuzz corpus files are byte-exact test inputs; CRLF conversion on
+# Windows checkouts would corrupt them. Listed last so it wins over the
+# blanket rule above.
+go/testdata/fuzz/** -text
