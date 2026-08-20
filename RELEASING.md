@@ -115,14 +115,29 @@ independently and has **no publish pipeline**: tagging is the release.
    go get github.com/basecamp/surfguard/go@vX.Y.Z
    ```
 
+**Major version 2 and beyond.** Go requires the major suffix in the module
+path itself, so v2 is not just a different tag: `go/go.mod` must declare
+`module github.com/basecamp/surfguard/go/v2`, the package's own imports and
+the README must use that path, and consumers `go get
+github.com/basecamp/surfguard/go/v2@v2.X.Y`. The repository tag stays
+`go/v2.X.Y` — the `/v2` belongs to the module path, not the tag. Tagging v2
+without moving the module path first produces a tag Go refuses to resolve.
+
 There is no yank and no re-point. `proxy.golang.org` and `sum.golang.org`
 record the tag's contents permanently on first fetch, so a mutated tag does
 not reach anyone who has already fetched it — and, worse, silently disagrees
-with the checksum database for everyone who has. **Direct-mode consumers
-(`GOFLAGS=-mod=mod GOPRIVATE=…`, vendoring, or any proxy bypass) read the tag
-straight from the repository and are not protected by that caching at all.**
-That is what the `refs/tags/go/v*` immutability ruleset is for. A bad release
-ships as a new patch version, exactly as it does for the gem.
+with the checksum database for everyone who has.
+
+That protection is not universal, and the exposed set is narrower than "anyone
+not using the proxy": it is consumers configured to fetch straight from
+version control, meaning `GOPROXY=direct` or a `GOPRIVATE`/`GONOPROXY` pattern
+matching this module. Those builds read the tag from the repository and are
+covered by neither the proxy nor the checksum database. (Vendoring is *not* in
+that set — a vendored build uses the checked-in `vendor/` tree without
+fetching, and `go mod vendor` itself downloads through `GOPROXY` like any
+other module command.) Protecting those consumers is what the
+`refs/tags/go/v*` immutability ruleset is for. A bad release ships as a new
+patch version, exactly as it does for the gem.
 
 ## Recovery
 
