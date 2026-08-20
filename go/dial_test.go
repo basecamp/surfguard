@@ -162,6 +162,34 @@ func TestCanonicalDialAddress(t *testing.T) {
 	}
 }
 
+// net.SplitHostPort validates only the delimiter, so an out-of-range numeric
+// port reached net.Dialer and came back as an untyped *net.OpError after the
+// policy had already approved the address.
+func TestDialContextRefusesOutOfRangeNumericPorts(t *testing.T) {
+	for _, address := range []string{
+		"example.com:65536",
+		"93.184.216.34:99999",
+		"example.com:4294967296",
+	} {
+		_, err := Policy{}.AllowAllPorts().DialContext(context.Background(), "tcp", address)
+		violationReason(t, err, ReasonPort)
+	}
+
+	// A non-numeric port is a service name: net.Dialer resolves it and
+	// ControlContext judges the numeric result, so it must not be refused
+	// here. "example.com:http" fails to connect in a sandbox, but it must
+	// fail as something other than our port refusal.
+	if err := dialPortAllowed("example.com", "http"); err != nil {
+		t.Errorf("a service name must reach the dialer, got %v", err)
+	}
+	if err := dialPortAllowed("example.com", ""); err != nil {
+		t.Errorf("an empty port must reach the dialer, got %v", err)
+	}
+	if err := dialPortAllowed("example.com", "443"); err != nil {
+		t.Errorf("an ordinary port must pass, got %v", err)
+	}
+}
+
 func TestDialContextRefusesBlockedTargetsWithoutConnecting(t *testing.T) {
 	server := httptest.NewServer(nil)
 	defer server.Close()

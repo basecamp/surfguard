@@ -51,8 +51,10 @@ func (p Policy) CheckRedirect(next func(req *http.Request, via []*http.Request) 
 		if err := schemeAllowed(req.URL.Scheme); err != nil {
 			return err
 		}
-		scheme := strings.ToLower(req.URL.Scheme)
-		if strings.EqualFold(sourceScheme, "https") && scheme == "http" {
+		// schemeAllowed has already established the target is lowercase
+		// http/https. The source comes from via[], which the caller can hand
+		// build, so it is still compared case-insensitively.
+		if strings.EqualFold(sourceScheme, "https") && req.URL.Scheme == "http" {
 			return &Violation{Reason: ReasonRedirectDowngrade}
 		}
 		return p.checkRedirectHost(req)
@@ -64,8 +66,14 @@ func (p Policy) CheckRedirect(next func(req *http.Request, via []*http.Request) 
 // scheme only on hops would leave the first request answered by
 // http.Transport's own "unsupported protocol scheme" error, which is outside
 // the [ErrBlocked] family the refusal contract promises.
+//
+// The comparison is deliberately case-sensitive, so that what this admits is
+// exactly what http.Transport handles — it keys on lowercase "http"/"https"
+// and would answer "HTTP" with that same untyped error. url.Parse lowercases
+// the scheme, so every parsed URL passes; an unnormalized one was built by
+// hand and is refused rather than admitted into a mismatch.
 func schemeAllowed(scheme string) error {
-	switch strings.ToLower(scheme) {
+	switch scheme {
 	case "http", "https":
 		return nil
 	default:

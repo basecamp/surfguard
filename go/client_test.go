@@ -178,11 +178,22 @@ func TestClientRefusesNonHTTPSchemesOnTheInitialRequest(t *testing.T) {
 		}
 	}
 
-	// The gate is on the scheme alone, so case does not matter and the
-	// ordinary schemes still pass through.
-	for _, scheme := range []string{"http", "HTTP", "https", "HttpS"} {
+	// What the gate admits is exactly what http.Transport handles: it keys on
+	// lowercase, and url.Parse lowercases the scheme, so every parsed URL
+	// passes. An unnormalized scheme was hand-built, and admitting it would
+	// hand the transport something it answers with its own untyped error.
+	for _, scheme := range []string{"http", "https"} {
 		if err := schemeAllowed(scheme); err != nil {
 			t.Errorf("%s must be allowed, got %v", scheme, err)
+		}
+	}
+	if u, err := url.Parse("HTTPS://Example.COM/path"); err != nil || u.Scheme != "https" {
+		t.Fatalf("url.Parse must lowercase the scheme: %q, %v", u.Scheme, err)
+	}
+	for _, scheme := range []string{"HTTP", "HttpS", ""} {
+		var violation *Violation
+		if err := schemeAllowed(scheme); !errors.As(err, &violation) || violation.Reason != ReasonScheme {
+			t.Errorf("unnormalized scheme %q must be refused, got %v", scheme, err)
 		}
 	}
 }
