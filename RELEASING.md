@@ -97,6 +97,33 @@ The release workflow uses a constant concurrency group
 middle run is silently dropped. Rapid successive release tags are therefore
 prohibited — cut one release, let its run finish, then cut the next.
 
+### Releasing the Go module
+
+Everything above concerns the gem. The Go module at `go/` versions
+independently and has **no publish pipeline**: tagging is the release.
+
+1. On an up-to-date `main` whose CI is green, annotate a tag named
+   `go/vX.Y.Z` — the subdirectory prefix is required by Go's module rules, and
+   the version applies to `go/` only, never to the gem.
+2. Push it. No workflow runs (see the tag ruleset note below); the module
+   becomes fetchable the first time anyone requests it.
+3. Verify from outside the repository, not from the checkout — a working tree
+   proves nothing about what was published:
+
+   ```sh
+   cd "$(mktemp -d)" && go mod init verify
+   go get github.com/basecamp/surfguard/go@vX.Y.Z
+   ```
+
+There is no yank and no re-point. `proxy.golang.org` and `sum.golang.org`
+record the tag's contents permanently on first fetch, so a mutated tag does
+not reach anyone who has already fetched it — and, worse, silently disagrees
+with the checksum database for everyone who has. **Direct-mode consumers
+(`GOFLAGS=-mod=mod GOPRIVATE=…`, vendoring, or any proxy bypass) read the tag
+straight from the repository and are not protected by that caching at all.**
+That is what the `refs/tags/go/v*` immutability ruleset is for. A bad release
+ships as a new patch version, exactly as it does for the gem.
+
 ## Recovery
 
 The registry reconciliation makes re-running a tag's workflow **idempotent**:
@@ -238,10 +265,18 @@ repeated. Replace IDs where noted.
    done
    ```
 
-4. **Tag rulesets** — two separate rulesets on `refs/tags/v*`, enforcement
+4. **Tag rulesets** — two separate rulesets, each matching **both**
+   `refs/tags/v*` (the gem) and `refs/tags/go/v*` (the Go module), enforcement
    `active`: (a) creation restricted, bypass_actors = the release team only
    (`bypass_mode: always`); (b) update + deletion blocked with **no** bypass
-   actors. Read back both, asserting enforcement and bypass lists.
+   actors. Read back both, asserting enforcement, the full include list, and
+   bypass lists.
+
+   A ref-name pattern's `*` does not cross `/`, so `refs/tags/v*` alone matches
+   no `go/` tag at all: listing the Go pattern is what protects those tags, not
+   an extra precaution. The same rule is why a `go/vX.Y.Z` tag does not trigger
+   `release.yml` (`tags: [ "v*" ]`), which is deliberate — the Go module has no
+   publish pipeline to run.
 
 5. **Main branch ruleset** — require PRs (≥ 1 approving review, code-owner
    review, **dismiss stale approvals on push** — the Dependabot automation's
