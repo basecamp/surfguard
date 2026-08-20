@@ -128,16 +128,25 @@ record the tag's contents permanently on first fetch, so a mutated tag does
 not reach anyone who has already fetched it — and, worse, silently disagrees
 with the checksum database for everyone who has.
 
-That protection is not universal, and the exposed set is narrower than "anyone
-not using the proxy": it is consumers configured to fetch straight from
-version control, meaning `GOPROXY=direct` or a `GOPRIVATE`/`GONOPROXY` pattern
-matching this module. Those builds read the tag from the repository and are
-covered by neither the proxy nor the checksum database. (Vendoring is *not* in
-that set — a vendored build uses the checked-in `vendor/` tree without
-fetching, and `go mod vendor` itself downloads through `GOPROXY` like any
-other module command.) Protecting those consumers is what the
-`refs/tags/go/v*` immutability ruleset is for. A bad release ships as a new
-patch version, exactly as it does for the gem.
+That protection is not universal, but the uncovered set is much narrower than
+"anyone not using the proxy", and the two mechanisms have to be kept apart to
+see why. The go command validates downloaded modules against `sum.golang.org`
+**regardless of where they were fetched from**, so bypassing the proxy alone —
+`GOPROXY=direct`, or a `GONOPROXY` pattern — does not bypass verification: a
+moved tag fails the checksum check loudly rather than being accepted.
+
+A mutated tag can only actually reach a consumer whose checksum verification
+is off for this module too: a matching `GOPRIVATE` (which disables both the
+proxy and the database), a matching `GONOSUMDB`, or `GOSUMDB=off` — and even
+then only on a first fetch, since an existing `go.sum` entry pins the hash.
+Vendoring is not in that set either: a vendored build uses the checked-in
+`vendor/` tree without fetching, and `go mod vendor` downloads through
+`GOPROXY` like any other module command.
+
+That residue is small, and it is still the reason the `refs/tags/go/v*`
+immutability ruleset exists — a tag nobody can move is a stronger guarantee
+than one whose consequences depend on each consumer's configuration. A bad
+release ships as a new patch version, exactly as it does for the gem.
 
 ## Recovery
 
