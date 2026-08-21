@@ -184,5 +184,6 @@ passes against a downloaded module zip that contains only files beneath
 `go/`.
 
 Module tags follow the Go subdirectory convention: `go/vX.Y.Z`. New denies
-are a minor bump with a prominent changelog entry; policy changes land in
+are a minor bump with a prominent entry in [`CHANGELOG.md`](CHANGELOG.md),
+which is also the body of the tag's GitHub Release; policy changes land in
 `conformance/` and both implementations in one commit.

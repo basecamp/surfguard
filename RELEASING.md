@@ -102,12 +102,17 @@ prohibited — cut one release, let its run finish, then cut the next.
 Everything above concerns the gem. The Go module at `go/` versions
 independently and has **no publish pipeline**: tagging is the release.
 
-1. On an up-to-date `main` whose CI is green, annotate a tag named
+1. Add the version's entry to `go/CHANGELOG.md` and merge it **before**
+   tagging. A new deny is a minor bump and the entry must name the range and
+   the `conformance/` case, per the promise in `go/README.md` and
+   `conformance/README.md`. Tagging first would ship a version whose only
+   description is the tag message, which nobody reads without a checkout.
+2. On an up-to-date `main` whose CI is green, annotate a tag named
    `go/vX.Y.Z` — the subdirectory prefix is required by Go's module rules, and
    the version applies to `go/` only, never to the gem.
-2. Push it. No workflow runs (see the tag ruleset note below); the module
+3. Push it. No workflow runs (see the tag ruleset note below); the module
    becomes fetchable the first time anyone requests it.
-3. Verify from outside the repository, not from the checkout — a working tree
+4. Verify from outside the repository, not from the checkout — a working tree
    proves nothing about what was published. Two things in your environment
    will otherwise answer the check for you:
 
@@ -136,6 +141,27 @@ independently and has **no publish pipeline**: tagging is the release.
    pattern overrides. That must report `module lookup disabled by
    GOPROXY=off`. If it succeeds, something answered locally — a warm cache, or
    a `GONOPROXY` pattern reaching VCS — and the positive run proved nothing.
+5. Only once step 4 passes, publish a GitHub Release on the tag whose body is
+   the entry from step 1. No pipeline does this — the gem's `github-release`
+   job is bound to `refs/tags/v*` and never sees a `go/` tag — so it is manual,
+   and skipping it leaves a Go consumer with nowhere to read what shipped:
+
+   ```sh
+   version=X.Y.Z
+   # The changelog file is the source; the Release body is a copy of one
+   # section. Read the extract before posting.
+   awk -v v="## v${version} " \
+     'index($0, v) == 1 { f = 1; next } f && /^## / { exit } f' \
+     go/CHANGELOG.md > /tmp/go-notes.md
+   gh release create "go/v${version}" --repo basecamp/surfguard \
+     --title "Surfguard for Go ${version}" --notes-file /tmp/go-notes.md
+   ```
+
+   It comes last because it is the announcement: publishing before step 4 would
+   advertise a version that may not resolve. Unlike the gem's Release, this one
+   carries no digest-verified asset — the module's bytes are whatever the tag
+   contains, and `sum.golang.org`, not this Release, is what attests them.
+   Attach nothing; the Release is the notes only.
 
 **Major version 2 and beyond.** Go requires the major suffix in the module
 path itself, so v2 is not just a different tag: `go/go.mod` must declare

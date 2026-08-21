@@ -43,3 +43,7 @@ whose expectation is the file's contract stated in its `description`.
 
 Policy changes land here and in every implementation in the same commit. A new
 deny is a minor version bump with a prominent changelog entry in each release.
+The implementations version independently, so "each release" means each one's
+own record: `../go/CHANGELOG.md` for the Go module, `../RELEASE_NOTES_X.Y.Z.md`
+for the gem. An entry names the range and the corpus case added here, because
+that is what tells a consumer which host stopped resolving on upgrade.
