@@ -56,9 +56,29 @@ Rehearse before every first-of-its-kind release.
 2. **First release only:** verify/create the RubyGems pending trusted
    publisher **immediately before tagging** (pending publishers expire after
    ~12 hours) — see one-time setup below.
-3. On an up-to-date `main` checkout: `rake tag`. Guards: clean tree, on
-   `main`, HEAD == the fetched canonical push URL, and the remote tag absent.
-   Retry is allowed only for an exact annotated local tag that peels to HEAD.
+3. **Tag the commit you rehearsed — not "latest `main`".** Immediately before
+   `rake tag`, assert that the checkout is still exactly the rehearsed commit
+   and that remote `main` has not moved past it:
+
+   ```sh
+   REHEARSED=<head_sha of the successful workflow_dispatch run>
+   test "$(git rev-parse HEAD)" = "$REHEARSED" || { echo "checkout is not the rehearsed commit"; exit 1; }
+   test "$(gh api repos/basecamp/surfguard/commits/main --jq .sha)" = "$REHEARSED" \
+     || { echo "remote main advanced; re-rehearse on the new head"; exit 1; }
+   ```
+
+   Do **not** `git pull` at this point. A fast-forward here silently moves the
+   checkout off the rehearsed commit onto one whose bytes nobody has built, and
+   `rake tag` would accept it — its guard is HEAD == fetched `main`, which a
+   pull satisfies by construction. If `main` has advanced, the answer is to
+   re-rehearse on the new head, not to tag past the rehearsal.
+
+   Then `rake tag`. Guards: clean tree, on `main`, HEAD == the fetched
+   canonical push URL, and the remote tag absent. Retry is allowed only for an
+   exact annotated local tag that peels to HEAD. The residual race is safe in
+   one direction only: if `main` advances between the assertion and the push,
+   `rake tag` re-fetches and aborts — it cannot tag the wrong commit, it can
+   only refuse.
 4. Approve the `release-rubygems` environment when the run pauses.
 5. Watch the run to completion. Verify afterwards:
    - digest equality across the RubyGems download, the GitHub Release asset,
@@ -208,20 +228,40 @@ before it pushes, and pushes `main` and the tag as two separate operations, so a
 failed `rake tag` can leave a local tag with no remote counterpart. Establish
 which state you are in before acting:
 
+**Do not use `git ls-remote` to establish this.** A URL spelled out in full on
+the command line is still rewritten by `url.<base>.insteadOf`, so the query can
+silently inspect a different repository and report the canonical tag absent —
+and a rewriting `insteadOf` rule has already been configured on this maintainer's
+machine once. Ask GitHub directly, over a path that touches no Git
+configuration:
+
 ```sh
-git ls-remote --tags https://github.com/basecamp/surfguard refs/tags/vX.Y.Z
+gh api repos/basecamp/surfguard/git/matching-refs/tags/vX.Y.Z
 ```
 
-Spell the canonical URL out rather than using `origin`: `rake tag` validates
-`origin` against that literal for the same reason — local remote and `insteadOf`
-configuration is exactly what you cannot trust while establishing remote state.
+This returns HTTP 200 with a JSON array in both directions: `[]` means the tag
+is **definitively absent**, a populated array carries `.object.sha` (the tag
+object) and `.object.type`. Any non-200 — auth failure, a secondary rate limit,
+a network error — means **unknown, not absent**. Never route on a failed query.
+
+When the array is populated, it is not automatically *your* tag; a concurrent
+attempt could have won the name. Compare it against the tag you still hold:
+
+```sh
+gh api repos/basecamp/surfguard/git/matching-refs/tags/vX.Y.Z \
+  --jq '.[]|select(.ref=="refs/tags/vX.Y.Z")|.object.sha'   # remote tag object
+git rev-parse vX.Y.Z                                        # local tag object
+git rev-parse 'vX.Y.Z^{commit}'                             # local peeled commit
+```
 
 | State | Recovery |
 |---|---|
-| Remote tag **absent**, no corrective commit needed (transient push failure) | Re-run `rake tag`. The local tag still peels to `HEAD`, so `rake tag` accepts it as the exact retryable annotated tag and re-pushes. No deletion, no ruleset change. |
-| Remote tag **absent**, a corrective commit **is** needed | The fix moves `HEAD`, so the stale local tag no longer peels to it and `rake tag` aborts by design. Prove the remote tag is absent (the `ls-remote` above returns nothing), then delete the **local** ref only: `git tag -d vX.Y.Z`. This touches no remote ref and no ruleset — it is **not** the immutability case. Then commit the fix, **re-rehearse** (`main` moved, so the rehearsed commit is stale), and re-run `rake tag`. |
-| Remote tag **present**, run failed at any stage | `gh run rerun <RUN_ID>`. Reconciliation is idempotent: same-SHA skips the push, downstream completes. **Never re-push, move, or delete the tag.** A defect that survives the re-run ships as the next patch version. |
-| **Ambiguous** (push errored or timed out) | Resolve the state before acting: run the `ls-remote` above, then route to a row above. Never treat a later 404 as licence to delete. If registry state is also unknown, **download the canonical RubyGems bytes and compare digests**; indeterminate or conflicting → **stop; contact RubyGems support**. |
+| Remote tag **absent**, remote `main` still equals your tagged `HEAD`, no corrective commit needed (transient push failure) | Re-run `rake tag`. The local tag still peels to `HEAD` and `HEAD` still equals fetched `main`, so `rake tag` accepts it as the exact retryable annotated tag and re-pushes. No deletion, no ruleset change. |
+| Remote tag **absent**, but remote `main` has **advanced** (an unrelated PR landed) | Re-running `rake tag` will *not* work: it fetches `main` and aborts because your tagged `HEAD` no longer equals it, and you cannot fast-forward while keeping the tag because the peel check then rejects the pair. Prove the remote tag absent (`[]` above), delete the **local** ref only (`git tag -d vX.Y.Z`), fast-forward, **re-rehearse on the new head**, and tag that. The rehearsed commit must be the commit you tag. |
+| Remote tag **absent**, a corrective commit **is** needed | Same shape: the fix moves `HEAD`, so the stale local tag no longer peels to it and `rake tag` aborts by design. Prove the remote tag absent, then delete the **local** ref only: `git tag -d vX.Y.Z`. This touches no remote ref and no ruleset — it is **not** the immutability case. Commit the fix, **re-rehearse**, and re-run `rake tag`. |
+| Remote tag **present and identical** to your local tag object, run failed at any stage | `gh run rerun <RUN_ID>`. Reconciliation is idempotent: same-SHA skips the push, downstream completes. **Never re-push, move, or delete the tag.** A defect that survives the re-run ships as the next patch version. |
+| Remote tag **present but different** from your local tag object (or you no longer hold one) | **Stop.** Another attempt won this tag name. Mere presence is not proof the remote tag is the one whose bytes you rehearsed, and the workflow only checks that its tag is well formed and points into `main` — not that it matches your checkout. Do not approve that run's environments; reconcile who tagged what first. |
+| **Ambiguous** (push errored or timed out) | Resolve the state before acting: run the `matching-refs` query above and the object comparison, then route to a row above. Never treat a 404 or a failed query as licence to delete. If registry state is also unknown, **download the canonical RubyGems bytes and compare digests**; indeterminate or conflicting → **stop; contact RubyGems support**. |
 | Workflow defect embedded in a published tag | Re-runs use the tagged workflow; fixing `main` doesn't fix the tag. Never move/delete the tag. Run `release-recovery.yml` (dispatch with the version) to finish attestation + the GitHub Release from verified canonical registry bytes; ship the workflow fix in the next version. |
 | Bad published release | Never re-point or delete the tag. Ship a new patch version (per SECURITY.md, fixes ship as new releases). Yank only for security-critical cases. |
 | Anything that appears to require lifting `release-tags-immutable` | **Stop.** Obtain a separately reviewed break-glass runbook. Do not improvise a ruleset change on a public security gem under pressure. No row above needs one: the only deletion any of them permits is of a **local** ref. |
