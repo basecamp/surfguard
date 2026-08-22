@@ -200,15 +200,31 @@ release ships as a new patch version, exactly as it does for the gem.
 
 The registry reconciliation makes re-running a tag's workflow **idempotent**:
 it never re-pushes bytes that are already published, and it fails closed on
-any conflict. Recovery rules, by failure state:
+any conflict.
+
+The discriminator is the **remote** tag — not whether anything was published —
+and then whether a corrective commit is needed. `rake tag` creates the local tag
+before it pushes, and pushes `main` and the tag as two separate operations, so a
+failed `rake tag` can leave a local tag with no remote counterpart. Establish
+which state you are in before acting:
+
+```sh
+git ls-remote --tags https://github.com/basecamp/surfguard refs/tags/vX.Y.Z
+```
+
+Spell the canonical URL out rather than using `origin`: `rake tag` validates
+`origin` against that literal for the same reason — local remote and `insteadOf`
+configuration is exactly what you cannot trust while establishing remote state.
 
 | State | Recovery |
 |---|---|
-| Failure before `gem push` ran (test/source/build/package/rebuild/reconciliation) | Fix on `main`; delete the unpublished tag; re-tag. Allowed **only** because nothing was published. Tag deletion has **no standing bypass** — an admin must temporarily lift the `release-tags-immutable` ruleset, delete, and re-enable it. That friction is deliberate. |
-| Push succeeded; confirm/attest/release failed | Re-run the same run/tag. Reconciliation sees same-SHA → skips the push; downstream completes idempotently. |
-| **Ambiguous push result** (push errored/timed out; registry state unknown) | Never use a later 404 to justify deleting or moving the tag. Poll, then **download the canonical RubyGems bytes and compare digests**. Match → re-run the same tag to finish. Absent after bounded polling → re-run the same tag (reconciliation decides). Indeterminate/conflicting → **stop; contact RubyGems support**. |
+| Remote tag **absent**, no corrective commit needed (transient push failure) | Re-run `rake tag`. The local tag still peels to `HEAD`, so `rake tag` accepts it as the exact retryable annotated tag and re-pushes. No deletion, no ruleset change. |
+| Remote tag **absent**, a corrective commit **is** needed | The fix moves `HEAD`, so the stale local tag no longer peels to it and `rake tag` aborts by design. Prove the remote tag is absent (the `ls-remote` above returns nothing), then delete the **local** ref only: `git tag -d vX.Y.Z`. This touches no remote ref and no ruleset — it is **not** the immutability case. Then commit the fix, **re-rehearse** (`main` moved, so the rehearsed commit is stale), and re-run `rake tag`. |
+| Remote tag **present**, run failed at any stage | `gh run rerun <RUN_ID>`. Reconciliation is idempotent: same-SHA skips the push, downstream completes. **Never re-push, move, or delete the tag.** A defect that survives the re-run ships as the next patch version. |
+| **Ambiguous** (push errored or timed out) | Resolve the state before acting: run the `ls-remote` above, then route to a row above. Never treat a later 404 as licence to delete. If registry state is also unknown, **download the canonical RubyGems bytes and compare digests**; indeterminate or conflicting → **stop; contact RubyGems support**. |
 | Workflow defect embedded in a published tag | Re-runs use the tagged workflow; fixing `main` doesn't fix the tag. Never move/delete the tag. Run `release-recovery.yml` (dispatch with the version) to finish attestation + the GitHub Release from verified canonical registry bytes; ship the workflow fix in the next version. |
 | Bad published release | Never re-point or delete the tag. Ship a new patch version (per SECURITY.md, fixes ship as new releases). Yank only for security-critical cases. |
+| Anything that appears to require lifting `release-tags-immutable` | **Stop.** Obtain a separately reviewed break-glass runbook. Do not improvise a ruleset change on a public security gem under pressure. No row above needs one: the only deletion any of them permits is of a **local** ref. |
 
 `release-recovery.yml` never publishes and never mints RubyGems credentials.
 It mirrors the release pipeline's privilege separation: an **unprivileged
@@ -391,6 +407,39 @@ back with sole reviewer `jeremy` (numeric id 199), self-review allowed,
 (branch). The unused `copilot` environment was verified to have no protection
 rules and deleted; readback lists only `github-release`, `release-recovery`,
 and `release-rubygems`.
+
+> **Correction (2026-08-22).** The `copilot` environment is **not deletable in
+> any lasting sense**, so the sentence above records an end state that does not
+> hold. It was present again on 2026-08-22 at `created_at`
+> `2026-08-17T21:56:44Z` — one second after pull request #11 was opened
+> (`21:56:43Z`), in the burst that opened #9–#13. Deleting it on 2026-08-22
+> reproduced the mechanism exactly: it reappeared with a **new** id and a new
+> `created_at` ten seconds after the next pull request was opened. The cause is
+> the active `Copilot Reviews` ruleset (`copilot_code_review`, scoped `~ALL`),
+> which makes GitHub create the environment on demand for each pull request.
+>
+> So the readback was almost certainly accurate the moment it was taken, and an
+> unrelated pull request recreated the environment seconds later. The defect is
+> not a false record — it is that a **transient** deletion was written down as a
+> settled control, and that "the readback lists only three environments" is an
+> assertion which cannot stay true in a repository that receives pull requests.
+>
+> This costs nothing in release authority. Across both incarnations the
+> environment had no protection rules, no deployment branch policy, no secrets,
+> no variables, no deployments, and no reference from any workflow; `release.yml`
+> and `release-recovery.yml` name only `release-rubygems`, `github-release` and
+> `release-recovery`. It can neither gate nor bypass any release job.
+>
+> The pre-tag gate therefore asserts **protection values, not an environment
+> count**: the three release environments must each carry the required-reviewer
+> and `can_admins_bypass` settings recorded above, and any environment outside
+> that set must be inert — no protection rules, no branch policy, no secrets, no
+> variables, no deployments. That assertion survives Copilot recreating
+> `copilot`; an equality check on the environment list would fail the release
+> spuriously after any pull request.
+>
+> Recorded as a correction rather than by amending the original paragraph, so
+> that the reason this readback could not be reproduced stays visible.
 
 Repository Actions were changed from unrestricted to selected repositories
 and read back with full-SHA pinning required, GitHub-owned/verified blanket
