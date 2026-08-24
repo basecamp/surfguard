@@ -236,16 +236,23 @@ machine once. Ask GitHub directly, over a path that touches no Git
 configuration:
 
 ```sh
-gh api repos/basecamp/surfguard/git/matching-refs/tags/vX.Y.Z
+gh api repos/basecamp/surfguard/git/matching-refs/tags/vX.Y.Z \
+  --jq '[.[]|select(.ref=="refs/tags/vX.Y.Z")]|length'
 ```
 
-This returns HTTP 200 with a JSON array in both directions: `[]` means the tag
-is **definitively absent**, a populated array carries `.object.sha` (the tag
-object) and `.object.type`. Any non-200 — auth failure, a secondary rate limit,
-a network error — means **unknown, not absent**. Never route on a failed query.
+**The exact-ref filter is required, not tidiness.** `matching-refs` matches by
+**prefix**: querying `tags/v0.1` returns `v0.1.0`, `v0.1.1`, `v0.1.2` and
+`v0.1.3`. So if `vX.Y.Z` is absent while some `vX.Y.Z…` tag exists — a
+`-rc1`, or `v1.2.30` against a query for `v1.2.3` — the raw array is populated
+even though your tag is not there, and an unfiltered length test misroutes an
+absent tag into the present-tag rows. Filter to the exact ref, then test.
 
-When the array is populated, it is not automatically *your* tag; a concurrent
-attempt could have won the name. Compare it against the tag you still hold:
+Read the filtered result as: `0` means the tag is **definitively absent**; `1`
+means present. Any non-200 — auth failure, a secondary rate limit, a network
+error — means **unknown, not absent**. Never route on a failed query.
+
+When it is present, it is not automatically *your* tag; a concurrent attempt
+could have won the name. Compare it against the tag you still hold:
 
 ```sh
 gh api repos/basecamp/surfguard/git/matching-refs/tags/vX.Y.Z \
@@ -257,7 +264,7 @@ git rev-parse 'vX.Y.Z^{commit}'                             # local peeled commi
 | State | Recovery |
 |---|---|
 | Remote tag **absent**, remote `main` still equals your tagged `HEAD`, no corrective commit needed (transient push failure) | Re-run `rake tag`. The local tag still peels to `HEAD` and `HEAD` still equals fetched `main`, so `rake tag` accepts it as the exact retryable annotated tag and re-pushes. No deletion, no ruleset change. |
-| Remote tag **absent**, but remote `main` has **advanced** (an unrelated PR landed) | Re-running `rake tag` will *not* work: it fetches `main` and aborts because your tagged `HEAD` no longer equals it, and you cannot fast-forward while keeping the tag because the peel check then rejects the pair. Prove the remote tag absent (`[]` above), delete the **local** ref only (`git tag -d vX.Y.Z`), fast-forward, **re-rehearse on the new head**, and tag that. The rehearsed commit must be the commit you tag. |
+| Remote tag **absent**, but remote `main` has **advanced** (an unrelated PR landed) | Re-running `rake tag` will *not* work: it fetches `main` and aborts because your tagged `HEAD` no longer equals it, and you cannot fast-forward while keeping the tag because the peel check then rejects the pair. Prove the remote tag absent (the filtered query above returns `0`), delete the **local** ref only (`git tag -d vX.Y.Z`), fast-forward, **re-rehearse on the new head**, and tag that. The rehearsed commit must be the commit you tag. |
 | Remote tag **absent**, a corrective commit **is** needed | Same shape: the fix moves `HEAD`, so the stale local tag no longer peels to it and `rake tag` aborts by design. Prove the remote tag absent, then delete the **local** ref only: `git tag -d vX.Y.Z`. This touches no remote ref and no ruleset — it is **not** the immutability case. Commit the fix, **re-rehearse**, and re-run `rake tag`. |
 | Remote tag **present and identical** to your local tag object, run failed at any stage | `gh run rerun <RUN_ID>`. Reconciliation is idempotent: same-SHA skips the push, downstream completes. **Never re-push, move, or delete the tag.** A defect that survives the re-run ships as the next patch version. |
 | Remote tag **present but different** from your local tag object (or you no longer hold one) | **Stop.** Another attempt won this tag name. Mere presence is not proof the remote tag is the one whose bytes you rehearsed, and the workflow only checks that its tag is well formed and points into `main` — not that it matches your checkout. Do not approve that run's environments; reconcile who tagged what first. |
