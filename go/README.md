@@ -27,12 +27,17 @@ whose body is the [`CHANGELOG.md`](CHANGELOG.md) entry. Both tag namespaces
 in this repository are protected by the same immutable-tag ruleset, so a
 released `go/` tag cannot be moved or deleted.
 
-Integrity comes from the Go checksum database: `go get` records the module
-zip's hash in your `go.sum` and verifies it against `sum.golang.org`, and
-the module proxy serves the same bytes to everyone. Keep `GOFLAGS`,
-`GONOSUMDB`, and `GOINSECURE` clear for this module. There are no Sigstore
-attestations for the Go module — the `gh attestation verify` recipe in the
-repository-root README is for the gem's release artifact only.
+Integrity comes from the Go checksum database: on first fetch `go get`
+verifies the module zip's hash against `sum.golang.org` and records it in
+your `go.sum`, which pins it from then on. Two settings switch that
+verification off for a module, and neither should match this one:
+`GOSUMDB=off` disables the database outright, and a `GOPRIVATE` or
+`GONOSUMDB` pattern matching `github.com/basecamp/surfguard` exempts the
+module from it (`GOPRIVATE` is also the default for `GONOPROXY`, so a
+matching pattern additionally bypasses the proxy and fetches straight from
+VCS). There are no Sigstore attestations for the Go module — the
+`gh attestation verify` recipe in the repository-root README is for the
+gem's release artifact only.
 
 ## Quick start
 
@@ -150,17 +155,18 @@ apply in this order, most to least binding:
    `AllowLoopback`.
 2. Structural defenses — invalid and zoned addresses, IPv4-mapped and
    IPv4-compatible forms, and the NAT64 local-use prefix are always refused.
-   No allowance re-admits them.
-3. The `IANASpecialUse()` tables.
-4. `AllowLoopback()` — admits `127.0.0.0/8` and `::1`, **including under
-   `IANASpecialUse()`**.
+   No allowance re-admits them: `AllowLoopback()` admits `::1` but not
+   `::ffff:127.0.0.1`.
+3. `AllowLoopback()` — admits `127.0.0.0/8` and `::1` ahead of every table
+   below, **including the `IANASpecialUse()` tables**.
+4. The `IANASpecialUse()` tables.
 5. `Allow(prefixes...)` — re-admits space the default deny tables or the
    IPv6 allocated-unicast allowlist would refuse. It does **not** pierce the
-   special-use tables.
+   special-use tables above it.
 6. The default deny tables and the IPv6 allocated-unicast allowlist.
 
-The asymmetry between 4 and 5 is the one to know about. RFC 1918 space is in
-the special-purpose registry, so once a policy is built with
+The asymmetry between `AllowLoopback` and `Allow` is the one to know about.
+RFC 1918 space is in the special-purpose registry, so once a policy is built with
 `IANASpecialUse()`, `Allow(netip.MustParsePrefix("10.4.0.0/16"))` does
 nothing — the addresses stay blocked. An on-premises target in private space
 needs a policy built without `IANASpecialUse()`; a local development target
@@ -212,15 +218,19 @@ A `*Violation` carries the gate that refused and, when known, what it
 refused. `Reason.String()` is a fixed token suitable for a structured log
 field; it never echoes input.
 
-| `Reason` | `String()` | Set by |
+The classification layer (`Blocked`, `BlockedHost`) returns booleans and
+never produces a `Violation`; the reasons below come from the resolution,
+enforcement, and client layers.
+
+| `Reason` | `String()` | Produced by |
 |---|---|---|
-| `ReasonBlockedAddr` | `blocked-address` | an address the policy refuses (classification, resolution, dial) |
-| `ReasonMalformedHost` | `malformed-host` | a host that is not a well-formed name or literal, including a bracketed name or a malformed numeric token |
-| `ReasonNetwork` | `network` | a non-TCP network (`DialContext` takes `tcp`/`tcp4`/`tcp6`; `Control` judges the concrete `tcp4`/`tcp6` attempt) |
-| `ReasonPort` | `port` | a port outside the policy's allowed set (dial layer) |
-| `ReasonScheme` | `scheme` | a URL scheme other than `http` or `https` |
-| `ReasonRedirectDowngrade` | `redirect-downgrade` | an `https` → `http` redirect |
-| `ReasonTooManyRedirects` | `too-many-redirects` | the `MaxRedirects` cap exceeded |
+| `ReasonBlockedAddr` | `blocked-address` | `CheckURL`/`ResolvePublicAddrs` when an answer or literal is refused; `Control`/`DialContext` when a connect attempt's address is refused; `CheckRedirect` when a redirect hop's literal host is refused |
+| `ReasonMalformedHost` | `malformed-host` | `CheckURL`/`ResolvePublicAddrs`, `DialContext`, `RoundTripper`/`Client`, and `CheckRedirect` for a host that is not a well-formed name or literal — a bracketed name, a malformed numeric token, a non-ASCII name, or a nil request |
+| `ReasonNetwork` | `network` | `DialContext` for anything but `tcp`/`tcp4`/`tcp6`; `Control` for anything but the concrete `tcp4`/`tcp6` attempt |
+| `ReasonPort` | `port` | `Control`/`DialContext` for a port outside the policy's allowed set |
+| `ReasonScheme` | `scheme` | `CheckURL`, `RoundTripper`/`Client`, and `CheckRedirect` for a scheme other than `http` or `https` |
+| `ReasonRedirectDowngrade` | `redirect-downgrade` | `CheckRedirect` for an `https` → `http` hop |
+| `ReasonTooManyRedirects` | `too-many-redirects` | `CheckRedirect` when the `MaxRedirects` cap is exceeded |
 
 Fields: `Host` (the host string, when the refusal was host-level), `Addr`
 (the refused `netip.Addr`, when address-level), `Port` (when
@@ -231,15 +241,37 @@ embed attacker-controlled detail. A resolver error that itself matches
 `ErrBlocked` is deliberately left out of the unwrap chain so one error can
 never match both families.
 
+`ErrUnresolvable` is produced only by the resolution layer. `Client()`
+delegates DNS to `net.Dialer`, so a lookup failure on a client request
+surfaces as the standard `*net.DNSError` inside the `*url.Error`, not as
+`ErrUnresolvable`. Use `CheckURL` as a preflight when you need the explicit
+retry-versus-deactivate distinction, and classify the client's own errors by
+family:
+
 ```go
+// Preflight: the explicit retry-versus-deactivate distinction.
+if err := surfguard.CheckURL(ctx, userSuppliedURL); err != nil {
+    var v *surfguard.Violation
+    switch {
+    case errors.As(err, &v):
+        log.Printf("refused reason=%s", v.Reason) // fixed token, no target detail
+        // deactivate the target
+    case errors.Is(err, surfguard.ErrUnresolvable):
+        // retry later
+    }
+    return
+}
+
+// The request itself: every hop and every connect attempt is still judged.
 _, err := client.Get(userSuppliedURL)
 var v *surfguard.Violation
+var dnsErr *net.DNSError
 switch {
 case errors.As(err, &v):
-    log.Printf("refused reason=%s", v.Reason) // fixed token, no target detail
+    log.Printf("refused reason=%s", v.Reason) // rebinding, redirect, or port refusal
     // deactivate the target
-case errors.Is(err, surfguard.ErrUnresolvable):
-    // retry later
+case errors.As(err, &dnsErr):
+    // lookup failed at dial time; retry later
 case err != nil:
     // transport or HTTP error — the net/http wrappers include the URL
 }
