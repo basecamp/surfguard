@@ -151,19 +151,22 @@ bypass.
 Every derivation returns an adjusted copy; calls accumulate. Address rules
 apply in this order, most to least binding:
 
-1. `Deny(prefixes...)` — refuses ahead of every other rule, including
+1. Invalid and zoned addresses — refused before any rule, always.
+2. `Deny(prefixes...)` — refuses ahead of every allowance, including
    `AllowLoopback`.
-2. Structural defenses — invalid and zoned addresses, IPv4-mapped and
-   IPv4-compatible forms, and the NAT64 local-use prefix are always refused.
-   No allowance re-admits them: `AllowLoopback()` admits `::1` but not
-   `::ffff:127.0.0.1`.
-3. `AllowLoopback()` — admits `127.0.0.0/8` and `::1` ahead of every table
-   below, **including the `IANASpecialUse()` tables**.
-4. The `IANASpecialUse()` tables.
-5. `Allow(prefixes...)` — re-admits space the default deny tables or the
+3. `AllowLoopback()` — admits exactly `127.0.0.0/8` and `::1`, ahead of
+   everything below, **including the `IANASpecialUse()` tables**. `::1` is
+   admitted even though it also sits inside the IPv4-compatible `::/96`
+   prefix refused at 4 — the one structural form an allowance precedes. The
+   mapped loopback `::ffff:127.0.0.1` is not in the carve-out and stays
+   refused.
+4. Structural transition-form refusals — IPv4-mapped and IPv4-compatible
+   forms and the NAT64 local-use prefix. `Allow` never re-admits them.
+5. The `IANASpecialUse()` tables.
+6. `Allow(prefixes...)` — re-admits space the default deny tables or the
    IPv6 allocated-unicast allowlist would refuse. It does **not** pierce the
    special-use tables above it.
-6. The default deny tables and the IPv6 allocated-unicast allowlist.
+7. The default deny tables and the IPv6 allocated-unicast allowlist.
 
 The asymmetry between `AllowLoopback` and `Allow` is the one to know about.
 RFC 1918 space is in the special-purpose registry, so once a policy is built with
@@ -185,9 +188,12 @@ that masks the bug.
 
 Ports are judged only at the enforcement layer (`Control`, `DialContext`,
 and therefore `Client()`); classification and resolution never see one.
-The default set is `{80, 443}`; `AllowPorts(ports...)` accumulates, and
-`AllowAllPorts()` removes the check. Loopback targets under `AllowLoopback()`
-are exempt from the port check, so `httptest` servers on random ports work.
+The default set is `{80, 443}`, and the first `AllowPorts(ports...)` call
+**replaces** it: `AllowPorts(8080)` leaves only 8080 allowed, so name 80 and
+443 explicitly if they should stay. Later calls accumulate with earlier
+ones. `AllowAllPorts()` removes the check. Loopback targets under
+`AllowLoopback()` are exempt from the port check, so `httptest` servers on
+random ports work.
 
 `MaxRedirects(n)` caps hops the client follows (default 10; 0 follows none).
 `WithResolver(r)` replaces `net.DefaultResolver` for the resolution layer
@@ -224,7 +230,7 @@ enforcement, and client layers.
 
 | `Reason` | `String()` | Produced by |
 |---|---|---|
-| `ReasonBlockedAddr` | `blocked-address` | `CheckURL`/`ResolvePublicAddrs` when an answer or literal is refused; `Control`/`DialContext` when a connect attempt's address is refused; `CheckRedirect` when a redirect hop's literal host is refused |
+| `ReasonBlockedAddr` | `blocked-address` | `CheckURL` when any answer or literal is refused; `Control`/`DialContext` when a connect attempt's address is refused; `CheckRedirect` when a redirect hop's literal host is refused. `ResolvePublicAddrs` never constructs one — it filters refused answers, so an all-blocked host comes back as an **empty slice with a nil error**, and callers must treat empty as a refusal |
 | `ReasonMalformedHost` | `malformed-host` | `CheckURL`/`ResolvePublicAddrs`, `DialContext`, `RoundTripper`/`Client`, and `CheckRedirect` for a host that is not a well-formed name or literal — a bracketed name, a malformed numeric token, a non-ASCII name, or a nil request |
 | `ReasonNetwork` | `network` | `DialContext` for anything but `tcp`/`tcp4`/`tcp6`; `Control` for anything but the concrete `tcp4`/`tcp6` attempt |
 | `ReasonPort` | `port` | `Control`/`DialContext` for a port outside the policy's allowed set |
