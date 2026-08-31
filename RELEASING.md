@@ -443,8 +443,9 @@ repeated. Replace IDs where noted.
     name is **never** treated as proof the name is unclaimed. **After first
     publication**: move/verify ownership under the RubyGems `basecamp`
     organization with MFA enforced, before announcing. Save the owner/MFA and
-    trusted-publisher readback with the release evidence. For 0.2.0 that
-    evidence remains pending because this implementation does not publish.
+    trusted-publisher readback with the release evidence. For 0.2.0 both
+    readbacks were captured on 2026-08-31 before tagging; see the release
+    record below.
 
 ## 0.2.0 control readback (2026-08-17)
 
@@ -493,6 +494,43 @@ and read back with full-SHA pinning required, GitHub-owned/verified blanket
 allowances disabled, and only repositories referenced by checked-in workflows
 allowed. RubyGems owner/MFA and trusted-publisher evidence is still a mandatory
 manual pre-tag gate. No tag or publication was performed.
+
+## 0.2.0 release record (2026-08-31)
+
+Tagged and published from commit `59e278c01a537755f22791429051891949231ead`
+(`main` after #23 and Dependabot #26). One digest end to end:
+
+```
+b7460e177be9ee452dc610fe244113cd38a2f5e6d6717bc26dcf9fefb320da30
+```
+
+- **Rehearsal** — `workflow_dispatch` run `32751899739` (2026-08-24) on the
+  same commit produced the `rubygem` artifact with this digest. The tag run's
+  `rubygem` artifact, read back before the first approval, and its
+  `canonical-gem` artifact, read back before the second, both matched it.
+- **Pre-tag gate** — the value-based control snapshot returned GO on all
+  controls at `2026-08-31T08:38:53Z`; the tag was pushed at `08:39:15Z` with
+  `main` unmoved.
+- **RubyGems readback** (signed-in session, human-only): gem owned by the
+  `basecamp` organization with "New versions require MFA"; exactly one trusted
+  publisher — GitHub Actions, `basecamp/surfguard`, `release.yml`,
+  environment `release-rubygems` — durable, not pending.
+- **Tag run** `33373923125` (`push`, attempt 1): both environment gates were
+  approved by hand. For each, the pending deployment was read back as the
+  expected environment id (`19725840442`, then `20023779259`) with every
+  upstream job green and the run's artifact digest equal to the rehearsed one.
+- **Post-publish verification** — five authorities agree on the digest:
+  RubyGems archive bytes, RubyGems v2 `.sha`, the GitHub Release asset
+  (release `379622054`, published `08:58:22Z`), the sole attestation subject
+  (`gh attestation verify` with `--signer-workflow` `release.yml` and
+  `--source-ref refs/tags/v0.2.0`; certificate records
+  `sourceRepositoryDigest` `59e278c0…` and `buildTrigger` `push`), and the
+  compact-index `checksum:`. The negative control was observed to fail for the
+  intended reason: a wrong `--source-ref` exits 1 with `expected
+  SourceRepositoryRef to be <bogus>, got refs/tags/v0.2.0`.
+
+Evidence, including the snapshot and verification scripts, is retained
+outside the repository with the release evidence.
 
 ## Dependabot automation
 
