@@ -12,7 +12,27 @@ import surfguard "github.com/basecamp/surfguard/go"
 ```
 
 Go 1.23 or newer. Zero dependencies (enforced in CI: no `go.sum`, no
-`require`).
+`require`). CI runs the suite on the 1.23 floor and on the current stable
+toolchain, on Linux, macOS, and Windows.
+
+## Installation and verification
+
+```sh
+go get github.com/basecamp/surfguard/go@vX.Y.Z
+```
+
+Releases are tagged `go/vX.Y.Z` (the Go subdirectory convention — the
+version you pass to `go get` is `vX.Y.Z`) and each has a GitHub Release
+whose body is the [`CHANGELOG.md`](CHANGELOG.md) entry. Both tag namespaces
+in this repository are protected by the same immutable-tag ruleset, so a
+released `go/` tag cannot be moved or deleted.
+
+Integrity comes from the Go checksum database: `go get` records the module
+zip's hash in your `go.sum` and verifies it against `sum.golang.org`, and
+the module proxy serves the same bytes to everyone. Keep `GOFLAGS`,
+`GONOSUMDB`, and `GOINSECURE` clear for this module. There are no Sigstore
+attestations for the Go module — the `gh attestation verify` recipe in the
+repository-root README is for the gem's release artifact only.
 
 ## Quick start
 
@@ -121,10 +141,52 @@ special-purpose registries — AMT, AS112, the whole NAT64 well-known prefix —
 applied to transition-embedded IPv4 as well, so IPv6 encoding is not a
 bypass.
 
-Derivations: `Allow`/`Deny` (netip prefixes; Deny > structural defenses >
-special-use tables > Allow > default tables), `AllowLoopback` (fixtures),
-`AllowPorts`/`AllowAllPorts` (dial layer; default `{80, 443}`),
-`MaxRedirects` (default 10), `WithResolver` (resolution seam).
+### Derivations and precedence
+
+Every derivation returns an adjusted copy; calls accumulate. Address rules
+apply in this order, most to least binding:
+
+1. `Deny(prefixes...)` — refuses ahead of every other rule, including
+   `AllowLoopback`.
+2. Structural defenses — invalid and zoned addresses, IPv4-mapped and
+   IPv4-compatible forms, and the NAT64 local-use prefix are always refused.
+   No allowance re-admits them.
+3. The `IANASpecialUse()` tables.
+4. `AllowLoopback()` — admits `127.0.0.0/8` and `::1`, **including under
+   `IANASpecialUse()`**.
+5. `Allow(prefixes...)` — re-admits space the default deny tables or the
+   IPv6 allocated-unicast allowlist would refuse. It does **not** pierce the
+   special-use tables.
+6. The default deny tables and the IPv6 allocated-unicast allowlist.
+
+The asymmetry between 4 and 5 is the one to know about. RFC 1918 space is in
+the special-purpose registry, so once a policy is built with
+`IANASpecialUse()`, `Allow(netip.MustParsePrefix("10.4.0.0/16"))` does
+nothing — the addresses stay blocked. An on-premises target in private space
+needs a policy built without `IANASpecialUse()`; a local development target
+wants `AllowLoopback()`, which admits loopback and leaves every other table in
+force:
+
+```go
+surfguard.Policy{}.Allow(prefix)                   // 10.4.1.2 admitted
+surfguard.Policy{}.IANASpecialUse().Allow(prefix)  // 10.4.1.2 still blocked
+surfguard.Policy{}.IANASpecialUse().AllowLoopback() // 127.0.0.1 admitted, 192.31.196.7 still blocked
+```
+
+Invalid prefixes and port 0 panic: allowing is a construction-time decision
+by trusted code, and a silently dropped allowance would fail closed in a way
+that masks the bug.
+
+Ports are judged only at the enforcement layer (`Control`, `DialContext`,
+and therefore `Client()`); classification and resolution never see one.
+The default set is `{80, 443}`; `AllowPorts(ports...)` accumulates, and
+`AllowAllPorts()` removes the check. Loopback targets under `AllowLoopback()`
+are exempt from the port check, so `httptest` servers on random ports work.
+
+`MaxRedirects(n)` caps hops the client follows (default 10; 0 follows none).
+`WithResolver(r)` replaces `net.DefaultResolver` for the resolution layer
+only — it does not, and cannot, reconfigure the dialer, which judges the
+literal address of every connect attempt no matter who resolved it.
 
 ## Refused vs unresolvable
 
@@ -145,6 +207,43 @@ prints the request URL and a dial-time `*net.OpError` prints the remote
 address. Code that must not disclose the target should classify with
 `errors.Is`/`errors.As` and log the extracted `*Violation`, not the outer
 error's text.
+
+A `*Violation` carries the gate that refused and, when known, what it
+refused. `Reason.String()` is a fixed token suitable for a structured log
+field; it never echoes input.
+
+| `Reason` | `String()` | Set by |
+|---|---|---|
+| `ReasonBlockedAddr` | `blocked-address` | an address the policy refuses (classification, resolution, dial) |
+| `ReasonMalformedHost` | `malformed-host` | a host that is not a well-formed name or literal, including a bracketed name or a malformed numeric token |
+| `ReasonNetwork` | `network` | a non-TCP network (`DialContext` takes `tcp`/`tcp4`/`tcp6`; `Control` judges the concrete `tcp4`/`tcp6` attempt) |
+| `ReasonPort` | `port` | a port outside the policy's allowed set (dial layer) |
+| `ReasonScheme` | `scheme` | a URL scheme other than `http` or `https` |
+| `ReasonRedirectDowngrade` | `redirect-downgrade` | an `https` → `http` redirect |
+| `ReasonTooManyRedirects` | `too-many-redirects` | the `MaxRedirects` cap exceeded |
+
+Fields: `Host` (the host string, when the refusal was host-level), `Addr`
+(the refused `netip.Addr`, when address-level), `Port` (when
+connection-level), `Reason`. An `*UnresolvableError` carries `Host` and
+`Err`, the underlying resolver error — reachable through the field and
+`errors.Is`/`errors.As`, never through the message, because resolver errors
+embed attacker-controlled detail. A resolver error that itself matches
+`ErrBlocked` is deliberately left out of the unwrap chain so one error can
+never match both families.
+
+```go
+_, err := client.Get(userSuppliedURL)
+var v *surfguard.Violation
+switch {
+case errors.As(err, &v):
+    log.Printf("refused reason=%s", v.Reason) // fixed token, no target detail
+    // deactivate the target
+case errors.Is(err, surfguard.ErrUnresolvable):
+    // retry later
+case err != nil:
+    // transport or HTTP error — the net/http wrappers include the URL
+}
+```
 
 ## Ruby parity and divergences
 
@@ -187,3 +286,13 @@ Module tags follow the Go subdirectory convention: `go/vX.Y.Z`. New denies
 are a minor bump with a prominent entry in [`CHANGELOG.md`](CHANGELOG.md),
 which is also the body of the tag's GitHub Release; policy changes land in
 `conformance/` and both implementations in one commit.
+
+## Security
+
+Surfguard is a security control, so a classification bug — an address in a
+blocked range judged public, an encoding or transition form that reaches a
+blocked address, a parser or resolver discrepancy that connects somewhere
+other than what was classified — is a vulnerability, not an ordinary defect.
+Report it privately through the
+[security policy](https://github.com/basecamp/surfguard/security/policy).
+Do not open a public issue.
