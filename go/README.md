@@ -159,7 +159,9 @@ apply in this order, most to least binding:
    admitted even though it also sits inside the IPv4-compatible `::/96`
    prefix refused at 4 — the one structural form an allowance precedes. The
    mapped loopback `::ffff:127.0.0.1` is not in the carve-out and stays
-   refused.
+   refused **in classification**; the dial layer unmaps before judging (the
+   kernel really connects to `127.0.0.1`), so enforcement treats it as
+   loopback and admits it under `AllowLoopback`, random ports included.
 4. Structural transition-form refusals — IPv4-mapped and IPv4-compatible
    forms and the NAT64 local-use prefix. `Allow` never re-admits them.
 5. The `IANASpecialUse()` tables.
@@ -231,10 +233,10 @@ enforcement, and client layers.
 | `Reason` | `String()` | Produced by |
 |---|---|---|
 | `ReasonBlockedAddr` | `blocked-address` | `CheckURL` when any answer or literal is refused; `Control`/`DialContext` when a connect attempt's address is refused; `CheckRedirect` when a redirect hop's literal host is refused. `ResolvePublicAddrs` never constructs one — it filters refused answers, so an all-blocked host comes back as an **empty slice with a nil error**, and callers must treat empty as a refusal |
-| `ReasonMalformedHost` | `malformed-host` | `CheckURL`/`ResolvePublicAddrs`, `DialContext`, `RoundTripper`/`Client`, and `CheckRedirect` for a host that is not a well-formed name or literal — a bracketed name, a malformed numeric token, a non-ASCII name, or a nil request |
+| `ReasonMalformedHost` | `malformed-host` | `CheckURL`/`ResolvePublicAddrs`, `DialContext`, `RoundTripper`/`Client`, and `CheckRedirect` for a host that is not a well-formed name or literal — a bracketed name, a malformed numeric token, a non-ASCII name. A directly invoked `RoundTripper` also refuses a nil request this way; `Client().Do(nil)` never reaches the wrapper — `net/http` itself fails first |
 | `ReasonNetwork` | `network` | `DialContext` for anything but `tcp`/`tcp4`/`tcp6`; `Control` for anything but the concrete `tcp4`/`tcp6` attempt |
 | `ReasonPort` | `port` | `Control`/`DialContext` for a port outside the policy's allowed set |
-| `ReasonScheme` | `scheme` | `CheckURL`, `RoundTripper`/`Client`, and `CheckRedirect` for a scheme other than `http` or `https` |
+| `ReasonScheme` | `scheme` | `RoundTripper`/`Client` and `CheckRedirect` for a scheme other than `http` or `https`. `CheckURL` judges addresses only and does **not** validate the scheme — a successful preflight of an `ftp://` URL proves nothing about it |
 | `ReasonRedirectDowngrade` | `redirect-downgrade` | `CheckRedirect` for an `https` → `http` hop |
 | `ReasonTooManyRedirects` | `too-many-redirects` | `CheckRedirect` when the `MaxRedirects` cap is exceeded |
 
@@ -269,7 +271,10 @@ if err := surfguard.CheckURL(ctx, userSuppliedURL); err != nil {
 }
 
 // The request itself: every hop and every connect attempt is still judged.
-_, err := client.Get(userSuppliedURL)
+resp, err := client.Get(userSuppliedURL)
+if err == nil {
+    defer resp.Body.Close()
+}
 var v *surfguard.Violation
 var dnsErr *net.DNSError
 switch {
