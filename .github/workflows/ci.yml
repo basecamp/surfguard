@@ -98,7 +98,13 @@ jobs:
           ACTIONLINT_VERSION: "1.7.12"
           ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         run: |
+          # A transient upstream 5xx here fails a required check for the whole
+          # PR (seen on #4). --retry covers exactly the transient cases —
+          # timeouts and HTTP 408/429/500/502/503/504 — and leaves a permanent
+          # 403/404 to fail at once. The checksum below still judges whatever
+          # finally arrives.
           curl --silent --show-error --fail --location --output actionlint.tar.gz \
+            --retry 5 --retry-delay 2 \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check
           mkdir --parents "${RUNNER_TEMP}/actionlint"
