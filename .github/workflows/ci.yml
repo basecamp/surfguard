@@ -306,10 +306,11 @@ jobs:
           # go1.27 became stable. Analyze with the newest toolchain the pinned
           # release supports rather than following stable, and keep the rest of
           # this job — and the whole go-test matrix — on stable so the new
-          # toolchain is still exercised. Raise both together.
-          GOTOOLCHAIN: go1.26.6
+          # toolchain is still exercised. Raise both together: the 2026.2
+          # series added go1.27 support; 2026.2.1 is its current patch.
+          GOTOOLCHAIN: go1.27.0
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+          go install honnef.co/go/tools/cmd/staticcheck@2026.2.1
           "$(go env GOPATH)/bin/staticcheck" ./...
       - name: govulncheck
         run: |
