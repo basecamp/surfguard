@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -173,7 +173,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -206,7 +206,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -253,7 +253,7 @@ jobs:
           [ "$(sha256sum script/release/registry_check.rb | awk '{print $1}')" = "$CHECK_SHA" ]
           [ "$(sha256sum lib/surfguard.rb | awk '{print $1}')" = "$SURFGUARD_SHA" ]
           [ "$(sha256sum lib/surfguard/version.rb | awk '{print $1}')" = "$VERSION_SHA" ]
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -323,7 +323,7 @@ jobs:
           [ "$(sha256sum script/release/registry_confirm.rb | awk '{print $1}')" = "$CONFIRM_SHA" ]
           [ "$(sha256sum lib/surfguard.rb | awk '{print $1}')" = "$SURFGUARD_SHA" ]
           [ "$(sha256sum lib/surfguard/version.rb | awk '{print $1}')" = "$VERSION_SHA" ]
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ env.RUBY_VERSION }}
           bundler-cache: false
@@ -425,7 +425,7 @@ jobs:
             fi
           fi
       - name: Create the GitHub Release from the canonical bytes # zizmor: ignore[superfluous-actions] -- the pinned action provides fail-on-unmatched-files, reviewed release-note handling, prerelease handling, target_commitish, and overwrite control as one operation
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ github.ref_name }}
           target_commitish: ${{ steps.tag.outputs.sha }}
