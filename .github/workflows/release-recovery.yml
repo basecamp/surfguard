@@ -152,7 +152,7 @@ jobs:
             echo "rubygems_sha256=${rubygems_sha256}"
           } >> "$GITHUB_OUTPUT"
           echo "tagged toolchain pins: ruby ${ruby_version}, rubygems ${rubygems_version}"
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ steps.pins.outputs.ruby }}
           bundler-cache: false
@@ -219,7 +219,7 @@ jobs:
           git merge-base --is-ancestor "$EXPECTED_TAG_SHA" origin/main
           mkdir tagged-src
           git archive "refs/tags/v${VERSION}" | tar --extract --directory tagged-src
-      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+      - uses: ruby/setup-ruby@bec3f19a76460dbe12f60def7d1a77585f07516c # v1.322.0
         with:
           ruby-version: ${{ needs.rebuild.outputs.ruby_version }}
           bundler-cache: false
@@ -356,7 +356,7 @@ jobs:
             fi
           fi
       - name: Create the GitHub Release from the canonical bytes # zizmor: ignore[superfluous-actions] -- the pinned action provides fail-on-unmatched-files, reviewed release-note handling, prerelease handling, target_commitish, and overwrite control as one operation
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ inputs.version }}
           target_commitish: ${{ steps.tag.outputs.sha }}
