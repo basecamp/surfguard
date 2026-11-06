@@ -60,11 +60,13 @@ def spellings(address)
   if ip.ipv4?
     octets = address.split(".")
     [ "#{address}/32", "#{address}/255.255.255.255", "#{address}/31", "#{address}/032", "[#{address}]",
+      "#{address}/255.255.255.255/32", "#{address}/255.255.255.255/255.255.255.255/31",
       octets.map { |octet| octet.rjust(3, "0") }.join("."), "::ffff:#{address}", "::#{address}" ]
   else
     full = ip.to_string
     [ "[#{address}]", "#{address}/128", "#{address}/127", "[#{address}]/128", address.upcase, full,
-      "#{address}%eth0", "#{full}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff" ]
+      "#{address}%eth0", "#{full}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+      "#{address}/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128", "#{address}/[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/127" ]
   end
 end
 

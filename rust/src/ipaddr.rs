@@ -29,6 +29,7 @@ impl Family {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Parsed {
     family: Family,
     address: u128,
@@ -49,59 +50,97 @@ pub(crate) fn host_address(text: &str) -> Option<IpAddr> {
 
 /// A zone (`%eth0`) makes the gem refuse the address, and any other `%`
 /// makes `IPAddr` refuse it, so a `%` anywhere is never an address.
+///
+/// `IPAddr` reads `a/b/c` as `a` masked by `IPAddr.new("b/c")`, recursively.
+/// This reads the same from the last segment back, so a text of any number of
+/// segments takes no more stack than one.
 fn parse(text: &str) -> Option<Parsed> {
     if text.contains('%') {
         return None;
     }
-    let (prefix, length) = match text.split_once('/') {
-        Some((prefix, length)) => (prefix, Some(length)),
-        None => (text, None),
-    };
-    let bracketed = prefix
+    let segments: Vec<&str> = text.split('/').collect();
+    let (last, leading) = segments.split_last().expect("split yields a segment");
+    let mut parsed = address(last).map(|(family, address)| Parsed {
+        family,
+        address,
+        mask: family.full(),
+    });
+    for (index, segment) in leading.iter().enumerate().rev() {
+        let mask = if index + 2 == segments.len() {
+            Mask::Text(last)
+        } else {
+            Mask::Parsed(parsed)
+        };
+        parsed = address(segment).and_then(|(family, address)| masked(family, address, mask));
+    }
+    parsed
+}
+
+/// What follows an address's `/`: the one segment left, which may be a prefix
+/// length, or more, read as an address and its own mask.
+#[derive(Clone, Copy)]
+enum Mask<'a> {
+    Text(&'a str),
+    Parsed(Option<Parsed>),
+}
+
+fn address(text: &str) -> Option<(Family, u128)> {
+    let bracketed = text
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
         .filter(|inner| !inner.contains('\n'));
-    let (family, address) = match bracketed {
-        Some(inner) => (Family::Ipv6, in6_addr(inner)?),
-        None => in_addr(prefix)
+    match bracketed {
+        Some(inner) => Some((Family::Ipv6, in6_addr(inner)?)),
+        None => in_addr(text)
             .map(|address| (Family::Ipv4, address))
-            .or_else(|| Some((Family::Ipv6, in6_addr(prefix)?)))?,
-    };
-    match length {
-        None => Some(Parsed {
-            family,
-            address,
-            mask: family.full(),
-        }),
-        Some(length) => masked(family, address, length),
+            .or_else(|| Some((Family::Ipv6, in6_addr(text)?))),
     }
 }
 
 /// `IPAddr#mask!` with a string: a prefix length without leading zeros, or a
 /// contiguous mask written as an address of the same family.
-fn masked(family: Family, address: u128, length: &str) -> Option<Parsed> {
-    let mask = if !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()) {
-        if length.len() > 1 && length.starts_with('0') {
-            return None;
+fn masked(family: Family, address: u128, mask: Mask<'_>) -> Option<Parsed> {
+    let mask = match mask {
+        Mask::Text(length)
+            if !length.is_empty() && length.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            if length.len() > 1 && length.starts_with('0') {
+                return None;
+            }
+            let length: u32 = length
+                .parse()
+                .ok()
+                .filter(|length| *length <= family.bits())?;
+            prefix_mask(family, length)
         }
-        let length: u32 = length
-            .parse()
-            .ok()
-            .filter(|length| *length <= family.bits())?;
-        prefix_mask(family, length)
-    } else {
-        let mask = parse(length).filter(|mask| mask.family == family)?;
-        let inverse = mask.address ^ mask.mask;
-        if inverse.wrapping_add(1) & inverse != 0 {
-            return None;
-        }
-        mask.address
+        Mask::Text(text) => contiguous(family, address_only(text)?)?,
+        Mask::Parsed(parsed) => contiguous(family, parsed?)?,
     };
     Some(Parsed {
         family,
         address: address & mask,
         mask,
     })
+}
+
+fn address_only(text: &str) -> Option<Parsed> {
+    address(text).map(|(family, address)| Parsed {
+        family,
+        address,
+        mask: family.full(),
+    })
+}
+
+fn contiguous(family: Family, mask: Parsed) -> Option<u128> {
+    if mask.family != family {
+        return None;
+    }
+    let inverse = mask.address ^ mask.mask;
+    if inverse.wrapping_add(1) & inverse == 0 {
+        Some(mask.address)
+    } else {
+        None
+    }
 }
 
 fn prefix_mask(family: Family, length: u32) -> u128 {
@@ -276,8 +315,20 @@ mod tests {
             ("", None),
             ("/32", None),
             ("1.2.3.4/", None),
+            (
+                "::1/ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/128",
+                Some("::1"),
+            ),
         ] {
             assert_eq!(read.map(str::to_owned), address(text), "{text:?}");
         }
+    }
+
+    #[test]
+    fn any_number_of_nested_masks_is_read_without_recursing() {
+        let nested = format!("93.184.216.34/{}32", "255.255.255.255/".repeat(200_000));
+        assert_eq!(Some(String::from("93.184.216.34")), address(&nested));
+        let broken = format!("93.184.216.34/{}31", "255.255.255.255/".repeat(200_000));
+        assert_eq!(None, address(&broken));
     }
 }
