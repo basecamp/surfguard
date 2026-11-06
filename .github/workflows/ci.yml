@@ -370,6 +370,107 @@ jobs:
             go test -run=NONE -fuzz="^${target}$" -fuzztime=30s .
           done
 
+  rust-test:
+    name: "Rust ${{ matrix.rust }} (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        # 1.91 is the crate's floor; stable proves the current toolchain.
+        rust: [ "1.91", stable ]
+    defaults:
+      run:
+        working-directory: rust
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup ships on every hosted runner, so no third-party toolchain action.
+      - name: Install the toolchain
+        env:
+          RUST_TOOLCHAIN: ${{ matrix.rust }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      # --locked: a dependency cannot arrive without the lockfile changing,
+      # which rust-lint refuses.
+      - run: cargo test --workspace --locked
+
+  rust-lint:
+    name: Rust lint, generated tables, self-contained crate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Docs build without warnings
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+      - name: Generated IANA tables match the checked-in snapshots
+        run: cargo run --locked -p surfguard-generate -- --check
+      - name: Assert zero dependencies
+        run: |
+          packages="$(grep -c '^\[\[package\]\]' Cargo.lock)"
+          test "$packages" = 2 || { cat Cargo.lock; echo "the lockfile grew a dependency"; exit 1; }
+      - name: Crate is self-contained (isolated copy, no repo parent)
+        run: |
+          # Prove the crate needs nothing beneath the repo root: copy rust/ to
+          # a scratch dir with no ../conformance or ../script, and run the
+          # suite and the generator there. The drift tests find no source and
+          # leave the mirrors authoritative; everything else must pass.
+          tmp="$(mktemp -d)"
+          mkdir "$tmp/surfguard-rust"
+          tar --exclude=./target --create --file - . | tar --extract --file - --directory "$tmp/surfguard-rust"
+          cd "$tmp/surfguard-rust"
+          cargo test --workspace --locked
+          cargo run --locked -p surfguard-generate -- --check
+
+  rust-ruby-parity:
+    name: Rust against the gem's own verdicts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.4.5"
+          bundler-cache: false
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      # The gem reads numeric hosts with this runner's glibc, the grammar the
+      # crate implements; the replay compares every verdict.
+      - name: Write the gem's verdicts
+        run: ruby rust/tests/ruby/verdicts.rb > "$RUNNER_TEMP/verdicts.json"
+      - name: Replay them against the crate
+        working-directory: rust
+        run: |
+          test -s "$RUNNER_TEMP/verdicts.json"
+          SURFGUARD_RUBY_VERDICTS="$RUNNER_TEMP/verdicts.json" cargo test --release --locked --test ruby_parity -- --nocapture
+
   codeql:
     name: "CodeQL (${{ matrix.language }})"
     runs-on: ubuntu-latest
@@ -389,6 +490,8 @@ jobs:
           # there so the analyzer sees the whole package.
           - language: go
             build-mode: manual
+          - language: rust
+            build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -416,7 +519,7 @@ jobs:
     name: CI
     if: always()
     timeout-minutes: 15
-    needs: [ test, lint, lint-actions, dependency-review, package-build, package, platforms, musl, iana-drift, codeql, go-test, go-lint, go-fuzz ]
+    needs: [ test, lint, lint-actions, dependency-review, package-build, package, platforms, musl, iana-drift, codeql, go-test, go-lint, go-fuzz, rust-test, rust-lint, rust-ruby-parity ]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -430,7 +533,7 @@ jobs:
         if: needs.dependency-review.result == 'skipped' && github.event_name == 'pull_request'
         run: exit 1
       - name: Reject every other skipped required job
-        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.package-build.result == 'skipped' || needs.package.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped' || needs.go-test.result == 'skipped' || needs.go-lint.result == 'skipped' || needs.go-fuzz.result == 'skipped'
+        if: needs.test.result == 'skipped' || needs.lint.result == 'skipped' || needs.lint-actions.result == 'skipped' || needs.package-build.result == 'skipped' || needs.package.result == 'skipped' || needs.platforms.result == 'skipped' || needs.musl.result == 'skipped' || needs.codeql.result == 'skipped' || needs.go-test.result == 'skipped' || needs.go-lint.result == 'skipped' || needs.go-fuzz.result == 'skipped' || needs.rust-test.result == 'skipped' || needs.rust-lint.result == 'skipped' || needs.rust-ruby-parity.result == 'skipped'
         run: exit 1
       - name: All green
         run: echo "All required jobs succeeded (or were legitimately skipped)."

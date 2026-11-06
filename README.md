@@ -2,7 +2,7 @@
 
 Surfguard resolves and classifies addresses for Ruby applications that fetch a URL supplied by someone else. It is deliberately not an HTTP client: the caller owns scheme restrictions, redirects, connection pinning, response limits, retries, and request deadlines.
 
-A Go implementation with the same classification guarantees — plus dial-time enforcement and a hardened `*http.Client`, which are idiomatic and cheap in Go — lives under [`go/`](go/README.md). Both implementations generate their policy tables from the same checked-in IANA snapshots (`script/iana/`) and assert identical verdicts against the shared corpus in [`conformance/`](conformance/README.md).
+A Go implementation with the same classification guarantees — plus dial-time enforcement and a hardened `*http.Client`, which are idiomatic and cheap in Go — lives under [`go/`](go/README.md). A Rust implementation with the same guarantees and this gem's API lives under [`rust/`](rust/README.md). Every implementation generates its policy tables from the same checked-in IANA snapshots (`script/iana/`) and asserts identical verdicts against the shared corpus in [`conformance/`](conformance/README.md).
 
 ## Installation
 

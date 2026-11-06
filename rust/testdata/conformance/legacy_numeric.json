@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "description": "Legacy inet_aton host spellings. Each denotes exactly one IPv4 address; implementations classify them authoritatively and never send them to DNS (a wildcard or search domain must not be able to answer for them). `blocked` is the default-policy verdict for `canonical`.",
+  "cases": [
+    { "label": "single-integer loopback", "input": "2130706433", "canonical": "127.0.0.1", "blocked": true },
+    { "label": "short loopback", "input": "127.1", "canonical": "127.0.0.1", "blocked": true },
+    { "label": "hex loopback", "input": "0x7f000001", "canonical": "127.0.0.1", "blocked": true },
+    { "label": "single zero", "input": "0", "canonical": "0.0.0.0", "blocked": true },
+    { "label": "octal zero", "input": "00", "canonical": "0.0.0.0", "blocked": true },
+    { "label": "hex zero", "input": "0x0", "canonical": "0.0.0.0", "blocked": true },
+    { "label": "single-integer link-local", "input": "2852039166", "canonical": "169.254.169.254", "blocked": true },
+    { "label": "hex link-local", "input": "0xa9fea9fe", "canonical": "169.254.169.254", "blocked": true },
+    { "label": "single-integer public", "input": "1572395042", "canonical": "93.184.216.34", "blocked": false,
+      "note": "Classified without DNS and admitted: legacy handling must not fail open OR closed" }
+  ]
+}

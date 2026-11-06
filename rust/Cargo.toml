@@ -1,0 +1,25 @@
+[package]
+name = "surfguard"
+version = "0.1.0"
+description = "Resolve and classify addresses for programs that fetch a URL supplied by someone else"
+repository = "https://github.com/basecamp/surfguard"
+license = "MIT"
+edition = "2024"
+rust-version = "1.91"
+readme = "README.md"
+keywords = ["ssrf", "ip", "security", "dns"]
+categories = ["network-programming"]
+include = ["/src", "/tests", "/testdata", "/README.md", "/CHANGELOG.md"]
+
+[lints]
+workspace = true
+
+[workspace]
+members = ["generate"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

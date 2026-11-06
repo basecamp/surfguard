@@ -3,3 +3,4 @@
 /tmp/
 *.gem
 /coverage/
+/rust/target/

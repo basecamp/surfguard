@@ -1,0 +1,11 @@
+[package]
+name = "surfguard-generate"
+version = "0.0.0"
+description = "Renders rust/src/iana.rs from the IANA registry snapshots"
+license = "MIT"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+
+[lints]
+workspace = true

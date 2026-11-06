@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "registry": "ipv6_allocated",
+  "url": "https://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.csv",
+  "metadata_url": "https://www.iana.org/assignments/ipv6-unicast-address-assignments/ipv6-unicast-address-assignments.xml",
+  "registry_updated": "2025-10-10",
+  "source_sha256": "ebff425bb1acbbea29c4f28146930873faddd5ee57260e95b57ed9e04ea21dd8",
+  "selection": "status_allocated",
+  "semantic_sha256": "b511f06a77effdbad197631e735dc51a118b16937cf4530a25374aa4f7b7ef6e",
+  "prefixes": [
+    "2001::/23", "2001:200::/23", "2001:400::/23", "2001:600::/23",
+    "2001:800::/22", "2001:c00::/23", "2001:e00::/23", "2001:1200::/23",
+    "2001:1400::/22", "2001:1800::/23", "2001:1a00::/23", "2001:1c00::/22",
+    "2001:2000::/19", "2001:4000::/23", "2001:4200::/23", "2001:4400::/23",
+    "2001:4600::/23", "2001:4800::/23", "2001:4a00::/23", "2001:4c00::/23",
+    "2001:5000::/20", "2001:8000::/19", "2001:a000::/20", "2001:b000::/20",
+    "2002::/16", "2003::/18", "2400::/12", "2410::/12", "2600::/12",
+    "2610::/23", "2620::/23", "2630::/12", "2800::/12", "2a00::/12",
+    "2a10::/12", "2c00::/12"
+  ]
+}
