@@ -10,7 +10,7 @@ below.** That is the promise `README.md` and `../conformance/README.md` make to
 consumers, and it is what makes an upgrade reviewable: a policy change can turn
 a host that resolved yesterday into `ErrBlocked` today, and the entry is where a
 consumer finds out which one and why. Policy changes land in `conformance/` and
-in both implementations in the same commit, so the entry names the corpus case
+in every implementation in the same commit, so the entry names the corpus case
 as well as the range.
 
 Each released tag also gets a GitHub Release whose body is the entry below, so
