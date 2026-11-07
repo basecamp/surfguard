@@ -216,6 +216,45 @@ immutability ruleset exists — a tag nobody can move is a stronger guarantee
 than one whose consequences depend on each consumer's configuration. A bad
 release ships as a new patch version, exactly as it does for the gem.
 
+### Releasing the Rust crate
+
+The crate at `rust/` versions independently too and, like the Go module, has
+**no publish pipeline**: it is not on crates.io, consumers depend on it as a
+git dependency, and tagging is the release.
+
+1. Set `version` in `rust/Cargo.toml` and add the version's entry to
+   `rust/CHANGELOG.md`, and merge both **before** tagging. A new deny is a
+   minor bump and the entry must name the range and the `conformance/` case.
+2. On an up-to-date `main` whose CI is green, annotate a tag named
+   `rust/vX.Y.Z`. The version applies to `rust/` only.
+3. Push it. No workflow runs: `release.yml` matches `v*`, which does not
+   cross `/`.
+4. Verify from outside the repository that the tag resolves to the crate,
+   with a fresh `CARGO_HOME` so no cached checkout answers for it:
+
+   ```sh
+   cd "$(mktemp -d)" && cargo init --quiet --name verify
+   cargo add --git https://github.com/basecamp/surfguard --tag rust/vX.Y.Z surfguard
+   CARGO_HOME="$(mktemp -d)" cargo build
+   ```
+
+5. Only once step 4 passes, publish a GitHub Release on the tag whose body is
+   the entry from step 1, as for the Go module:
+
+   ```sh
+   version=X.Y.Z
+   awk -v v="## v${version} " \
+     'index($0, v) == 1 { f = 1; next } f && /^## / { exit } f' \
+     rust/CHANGELOG.md > /tmp/rust-notes.md
+   gh release create "rust/v${version}" --repo basecamp/surfguard \
+     --title "Surfguard for Rust ${version}" --notes-file /tmp/rust-notes.md
+   ```
+
+A consumer that pins `rev` rather than `tag` is held to the commit whatever
+happens to the tag; one that pins `tag` relies on the `refs/tags/rust/v*`
+immutability ruleset, as a Go consumer without the checksum database relies on
+`refs/tags/go/v*`. A bad release ships as a new patch version.
+
 ## Recovery
 
 The registry reconciliation makes re-running a tag's workflow **idempotent**:
@@ -400,18 +439,19 @@ repeated. Replace IDs where noted.
    done
    ```
 
-4. **Tag rulesets** — two separate rulesets, each matching **both**
-   `refs/tags/v*` (the gem) and `refs/tags/go/v*` (the Go module), enforcement
+4. **Tag rulesets** — two separate rulesets, each matching `refs/tags/v*` (the
+   gem), `refs/tags/go/v*` (the Go module), and `refs/tags/rust/v*` (the Rust
+   crate), enforcement
    `active`: (a) creation restricted, bypass_actors = the release team only
    (`bypass_mode: always`); (b) update + deletion blocked with **no** bypass
    actors. Read back both, asserting enforcement, the full include list, and
    bypass lists.
 
    A ref-name pattern's `*` does not cross `/`, so `refs/tags/v*` alone matches
-   no `go/` tag at all: listing the Go pattern is what protects those tags, not
-   an extra precaution. The same rule is why a `go/vX.Y.Z` tag does not trigger
-   `release.yml` (`tags: [ "v*" ]`), which is deliberate — the Go module has no
-   publish pipeline to run.
+   no `go/` or `rust/` tag at all: listing those patterns is what protects
+   those tags, not an extra precaution. The same rule is why a `go/vX.Y.Z` or
+   `rust/vX.Y.Z` tag does not trigger `release.yml` (`tags: [ "v*" ]`), which
+   is deliberate — neither has a publish pipeline to run.
 
 5. **Main branch ruleset** — require PRs (≥ 1 approving review, code-owner
    review, **dismiss stale approvals on push** — the Dependabot automation's
