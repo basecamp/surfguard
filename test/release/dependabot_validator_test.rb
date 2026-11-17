@@ -86,8 +86,18 @@ class DependabotValidatorTest < Minitest::Test
     _out, _err, status = validate(grouped)
     refute_predicate status, :success?
 
-    _out, _err, status = validate(updated("ast", "2.4.3", "2.4.4"), "version-update:semver-minor")
-    refute_predicate status, :success?
+    # rake is direct, so only the metadata check can reject these; a
+    # transitive gem would be rejected as transitive whatever the metadata.
+    native = with_native_variant(File.read(LOCK), "rake", "13.4.2")
+    [
+      [ File.read(LOCK), updated("rake", "13.4.2", "13.4.3"), "version-update:semver-minor" ],
+      [ File.read(LOCK), updated("rake", "13.4.2", "13.5.0"), "version-update:semver-patch" ],
+      [ native, bump_native(native, "rake", "13.4.2", "13.4.3"), "version-update:semver-minor" ]
+    ].each do |base, head, update|
+      _out, err, status = validate_pair(base, head, update)
+      refute_predicate status, :success?
+      assert_match(/metadata update type mismatch/, err)
+    end
   end
 
   def test_rejects_stale_changed_checksum_and_unrelated_checksum_mutation
