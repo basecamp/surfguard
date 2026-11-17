@@ -221,7 +221,9 @@ module Surfguard
       # so checksum-shaped lines injected elsewhere still register as change.
       text.sub(/^CHECKSUMS\n(?:  [A-Za-z0-9_.-]+ \([^\n]+\)(?: sha256=[0-9a-f]{64})?\n)*/, "")
         .lines
-        .map { |line| line.sub(/^(    [A-Za-z0-9_.-]+) \([^\n]+\)$/, '\1 (VERSION)') }
+        # Mask only the version: the platform suffix stays, so swapping two
+        # variants' headers still moves their dependency edges visibly.
+        .map { |line| line.sub(/^(    [A-Za-z0-9_.-]+) \([^ ()-]+(-[^ ()]+)?\)$/, '\1 (VERSION\2)') }
         .join
     end
 

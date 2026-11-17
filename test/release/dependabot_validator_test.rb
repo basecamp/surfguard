@@ -232,6 +232,34 @@ class DependabotValidatorTest < Minitest::Test
     end
   end
 
+  def test_rejects_swapped_variant_headers_that_move_dependency_edges_between_platforms
+    native = "3.3.12.0-x86_64-linux-gnu"
+    edges = "    parser (3.3.12.0)\n      ast (~> 2.4.1)\n      racc\n"
+    parser_variant = lambda do |text|
+      text.sub(edges, "#{edges}    parser (#{native})\n")
+        .sub(/^  parser \(3\.3\.12\.0\) sha256=\h{64}\n/) { "#{$&}  parser (#{native}) sha256=#{'c' * 64}\n" }
+    end
+    swap_parser = lambda do |text|
+      text.sub("#{edges}    parser (#{native})\n", "#{edges.sub('(3.3.12.0)', "(#{native})")}    parser (3.3.12.0)\n")
+    end
+    rake_base = with_native_variant(File.read(LOCK), "rake", "13.4.2")
+      .sub("    rake (13.4.2)\n", "    rake (13.4.2)\n      racc\n")
+    rake_head = bump_native(with_native_variant(File.read(LOCK), "rake", "13.4.2"), "rake", "13.4.2", "13.4.3")
+      .sub("    rake (13.4.3)\n    rake (13.4.3-x86_64-linux-gnu)\n",
+        "    rake (13.4.3-x86_64-linux-gnu)\n      racc\n    rake (13.4.3)\n")
+
+    [
+      # Beside an otherwise valid bump, an unrelated gem's edges change platform.
+      [ parser_variant.call(File.read(LOCK)), swap_parser.call(parser_variant.call(updated("rake", "13.4.2", "13.4.3"))) ],
+      # The updated gem itself moves its edges to the other platform.
+      [ rake_base, rake_head ]
+    ].each do |from, head|
+      _out, err, status = validate_pair(from, head)
+      refute_predicate status, :success?
+      assert_match(/changed outside version\/checksum/, err)
+    end
+  end
+
   def test_rejects_checksum_shaped_lines_outside_the_checksums_section
     injected = updated("rake", "13.4.2", "13.4.3")
       .sub("  specs:\n    activesupport",
