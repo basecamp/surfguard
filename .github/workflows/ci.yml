@@ -19,7 +19,10 @@ concurrency:
 jobs:
   test:
     name: "Ruby ${{ matrix.ruby }}"
-    runs-on: ubuntu-latest
+    # The 3.4.5 floor has no prebuilt Ruby for ubuntu-26.04 (ruby-builder
+    # ships only the newer 3.4 patches there), so exact-floor jobs stay on
+    # 24.04 until the floor moves.
+    runs-on: ${{ matrix.ruby == '3.4.5' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     permissions:
       contents: read
     timeout-minutes: 15
@@ -141,7 +144,10 @@ jobs:
 
   package-build:
     name: Build package candidate
-    runs-on: ubuntu-latest
+    # The 3.4.5 floor has no prebuilt Ruby for ubuntu-26.04 (ruby-builder
+    # ships only the newer 3.4 patches there), so exact-floor jobs stay on
+    # 24.04 until the floor moves.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -171,7 +177,10 @@ jobs:
   package:
     name: Fresh-runner isolated package suite
     needs: package-build
-    runs-on: ubuntu-latest
+    # The 3.4.5 floor has no prebuilt Ruby for ubuntu-26.04 (ruby-builder
+    # ships only the newer 3.4 patches there), so exact-floor jobs stay on
+    # 24.04 until the floor moves.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -232,7 +241,10 @@ jobs:
   iana-drift:
     name: IANA semantic drift
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # The 3.4.5 floor has no prebuilt Ruby for ubuntu-26.04 (ruby-builder
+    # ships only the newer 3.4 patches there), so exact-floor jobs stay on
+    # 24.04 until the floor moves.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -446,7 +458,10 @@ jobs:
 
   rust-ruby-parity:
     name: Rust against the gem's own verdicts
-    runs-on: ubuntu-latest
+    # The 3.4.5 floor has no prebuilt Ruby for ubuntu-26.04 (ruby-builder
+    # ships only the newer 3.4 patches there), so exact-floor jobs stay on
+    # 24.04 until the floor moves.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     timeout-minutes: 15
