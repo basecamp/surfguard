@@ -135,15 +135,28 @@ module Surfguard
       # everything after the first dash. Raw versions keep the full inner
       # string to match the CHECKSUMS spelling exactly; the platform is also
       # tracked on its own so a version bump cannot smuggle a platform flip.
+      #
+      # A gem with native builds locks one record per platform (prism and
+      # prism-x86_64-linux-gnu). Those variants are one dependency: they must
+      # share a version, so an update moves them together, and their platform
+      # set is compared whole. The same name and platform twice is ambiguous.
       text.scan(/^    ([A-Za-z0-9_.-]+) \((([^ ()-]+)(?:-([^ ()]+))?)\)$/).each do |name, raw, version, platform|
-        raise Error, "ambiguous duplicate dependency #{name}" if specs.key?(name)
+        parsed = Gem::Version.new(version)
+        if (platforms[name] ||= []).include?(platform)
+          raise Error, "ambiguous duplicate dependency #{name}"
+        end
+        if specs.key?(name) && specs[name].to_s != version
+          raise Error, "ambiguous dependency #{name}: platform variants lock different versions"
+        end
 
-        specs[name] = Gem::Version.new(version)
-        raw_versions[name] = raw
-        platforms[name] = platform
+        specs[name] = parsed
+        (raw_versions[name] ||= []) << raw
+        platforms[name] << platform
       rescue ArgumentError
         raise Error, "invalid dependency version for #{name}"
       end
+      raw_versions.each_value(&:sort!)
+      platforms.each_value { |list| list.sort_by!(&:to_s) }
       [ specs, raw_versions, platforms ]
     end
 
@@ -183,18 +196,18 @@ module Surfguard
     def verify_checksums(base, head, name)
       base_changed = base[:checksums].select { |(dependency, _version), _digest| dependency == name }
       head_changed = head[:checksums].select { |(dependency, _version), _digest| dependency == name }
-      expected_base_key = [ name, base[:raw_versions].fetch(name) ]
-      expected_head_key = [ name, head[:raw_versions].fetch(name) ]
-      unless base_changed.keys == [ expected_base_key ]
-        raise Error, "changed dependency must have exactly one matching base checksum"
+      expected_base_keys = base[:raw_versions].fetch(name).map { |raw| [ name, raw ] }
+      expected_head_keys = head[:raw_versions].fetch(name).map { |raw| [ name, raw ] }
+      unless base_changed.keys.sort == expected_base_keys
+        raise Error, "changed dependency must have exactly one matching base checksum per platform"
       end
-      unless head_changed.keys == [ expected_head_key ]
-        raise Error, "changed dependency must have exactly one matching head checksum"
+      unless head_changed.keys.sort == expected_head_keys
+        raise Error, "changed dependency must have exactly one matching head checksum per platform"
       end
       if (base_changed.values + head_changed.values).any?(&:nil?)
         raise Error, "changed dependency checksum is missing"
       end
-      if base_changed.values == head_changed.values
+      if base_changed.values.intersect?(head_changed.values)
         raise Error, "changed dependency checksum did not change"
       end
 

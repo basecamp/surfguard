@@ -179,6 +179,59 @@ class DependabotValidatorTest < Minitest::Test
     assert_match(/platform changed/, err)
   end
 
+  # A gem with native builds locks one record per platform, as prism 2.x does.
+  def with_native_variant(text, name, version, platform = "x86_64-linux-gnu", digest = "c" * 64)
+    text.sub(/^    #{Regexp.escape(name)} \(#{Regexp.escape(version)}\)\n/) { "#{$&}    #{name} (#{version}-#{platform})\n" }
+      .sub(/^  #{Regexp.escape(name)} \(#{Regexp.escape(version)}\) sha256=\h{64}\n/) do
+        "#{$&}  #{name} (#{version}-#{platform}) sha256=#{digest}\n"
+      end
+  end
+
+  def bump_native(text, name, from, to, platform = "x86_64-linux-gnu")
+    text.gsub("    #{name} (#{from})", "    #{name} (#{to})")
+      .gsub("    #{name} (#{from}-#{platform})", "    #{name} (#{to}-#{platform})")
+      .sub(/^  #{Regexp.escape(name)} \(#{Regexp.escape(from)}\) sha256=\h{64}/, "  #{name} (#{to}) sha256=#{'a' * 64}")
+      .sub(/^  #{Regexp.escape(name)} \(#{Regexp.escape(from)}-#{platform}\) sha256=\h{64}/,
+        "  #{name} (#{to}-#{platform}) sha256=#{'d' * 64}")
+  end
+
+  def test_platform_variants_of_one_gem_are_one_dependency_that_moves_together
+    base = with_native_variant(File.read(LOCK), "rake", "13.4.2")
+    _out, err, status = validate_pair(base, bump_native(base, "rake", "13.4.2", "13.4.3"))
+    assert_predicate status, :success?, err
+
+    _out, err, status = validate_pair(with_native_variant(File.read(LOCK), "racc", "1.8.1"),
+      with_native_variant(updated("rake", "13.4.2", "13.4.3"), "racc", "1.8.1"))
+    assert_predicate status, :success?, err
+  end
+
+  def test_rejects_platform_variants_that_split_add_repeat_or_keep_a_checksum
+    base = with_native_variant(File.read(LOCK), "rake", "13.4.2")
+    bumped = bump_native(base, "rake", "13.4.2", "13.4.3")
+    split = bumped.sub("    rake (13.4.3-x86_64-linux-gnu)", "    rake (13.4.2-x86_64-linux-gnu)")
+      .sub("  rake (13.4.3-x86_64-linux-gnu) sha256=", "  rake (13.4.2-x86_64-linux-gnu) sha256=")
+    added = with_native_variant(updated("rake", "13.4.2", "13.4.3"), "rake", "13.4.3", "x86_64-linux-gnu", "e" * 64)
+    repeated = base.sub("    rake (13.4.2-x86_64-linux-gnu)\n",
+      "    rake (13.4.2-x86_64-linux-gnu)\n    rake (13.4.2-x86_64-linux-gnu)\n")
+    kept = bumped.sub(/(  rake \(13\.4\.3-x86_64-linux-gnu\) sha256=)\h{64}/, "\\1#{'c' * 64}")
+    swapped = bumped.sub(/(  rake \(13\.4\.3-x86_64-linux-gnu\) sha256=)\h{64}/,
+      "\\1#{base[/  rake \(13\.4\.2\) sha256=(\h{64})/, 1]}")
+    dropped = bumped.sub(/^  rake \(13\.4\.3-x86_64-linux-gnu\) sha256=\h{64}\n/, "")
+
+    [
+      [ base, split, /platform variants lock different versions/ ],
+      [ File.read(LOCK), added, /platform changed/ ],
+      [ base, repeated, /ambiguous duplicate dependency rake/ ],
+      [ base, kept, /did not change/ ],
+      [ base, swapped, /did not change/ ],
+      [ base, dropped, /matching head checksum per platform/ ]
+    ].each do |from, head, message|
+      _out, err, status = validate_pair(from, head)
+      refute_predicate status, :success?, message.inspect
+      assert_match message, err
+    end
+  end
+
   def test_rejects_checksum_shaped_lines_outside_the_checksums_section
     injected = updated("rake", "13.4.2", "13.4.3")
       .sub("  specs:\n    activesupport",
