@@ -8,7 +8,12 @@ require "tempfile"
 
 class DependabotValidatorTest < Minitest::Test
   VALIDATOR = File.expand_path("../../.github/scripts/validate_dependabot_lockfile.rb", __dir__)
-  LOCK = File.expand_path("../../Gemfile.lock", __dir__)
+  # The mutation tests below name exact gems and versions, so they run against
+  # a frozen copy of the lockfile: a Dependabot bump to the live one must not
+  # break the tests of the gate that judges it. The live lockfile is checked
+  # only for what the auto-merge workflow needs of it: that it parses.
+  LOCK = File.expand_path("fixtures/validator_base.gemfile.lock", __dir__)
+  LIVE_LOCK = File.expand_path("../../Gemfile.lock", __dir__)
   CHECK = Surfguard::DependabotLockfileValidator
   Status = Data.define(:exitstatus) do
     def success? = exitstatus.zero?
@@ -39,6 +44,14 @@ class DependabotValidatorTest < Minitest::Test
     File.read(LOCK).gsub("    #{name} (#{from})", "    #{name} (#{to})")
       .gsub("  #{name} (#{from}) sha256=", "  #{name} (#{to}) sha256=")
       .sub(/(  #{Regexp.escape(name)} \(#{Regexp.escape(to)}\) sha256=)[0-9a-f]{64}/, "\\1#{'a' * 64}")
+  end
+
+  def test_live_lockfile_parses_so_auto_merge_can_judge_the_next_update
+    lock = CHECK.parse_lock(LIVE_LOCK)
+    assert_includes lock[:specs], "minitest"
+  rescue CHECK::Error => error
+    flunk "the auto-merge validator rejects the live Gemfile.lock as a base, " \
+      "so every later Dependabot update would need a human merge: #{error.message}"
   end
 
   def test_accepts_one_patch_and_independently_checks_update_type
