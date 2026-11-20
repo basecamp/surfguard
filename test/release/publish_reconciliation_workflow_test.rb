@@ -387,6 +387,9 @@ class WorkflowPolicyTest < Minitest::Test
     assert_equal({ "permission-pull-requests" => "write" },
       steps.fetch(1).fetch("with").select { |key, _| key.start_with?("permission-") })
     assert_equal "${{ github.event.repository.name }}", steps.fetch(1).fetch("with").fetch("repositories")
+    # Dependabot-triggered runs read Dependabot secrets only, so both values come from there.
+    assert_equal "${{ secrets.DEPENDABOT_APPROVER_CLIENT_ID }}", steps.fetch(1).fetch("with").fetch("client-id")
+    assert_equal "${{ secrets.DEPENDABOT_APPROVER_PRIVATE_KEY }}", steps.fetch(1).fetch("with").fetch("private-key")
     initial = steps.fetch(0).fetch("run")
     assert_includes initial, '[ "$state" = "open" ]'
     assert_includes initial, '[ "$draft" = "false" ]'

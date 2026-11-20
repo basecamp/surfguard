@@ -4,8 +4,12 @@ name: Dependabot auto-merge
 # (bundler major, all github-actions PRs) stays human-gated: never
 # auto-approved, never auto-merged.
 #
-# The approval comes from the org's PR bot App, not GITHUB_TOKEN: the org
-# doesn't let Actions create or approve pull requests. main requires one
+# The approval comes from the Dependabot approver App, not GITHUB_TOKEN: the
+# org doesn't let Actions create or approve pull requests. The App is
+# installed on this repository alone, holds only pull_requests: write, and its
+# key and client id are this repository's Dependabot secrets, which only
+# Dependabot-triggered runs can read. Write access to another repository can't
+# reach it. main requires one
 # approving review, so an approval that this workflow can't give leaves the
 # PR waiting for a person, which is the safe failure.
 #
@@ -14,8 +18,8 @@ name: Dependabot auto-merge
 # 2026-12-02, and pull_request_target puts a privileged token and secrets
 # next to an untrusted head. On pull_request, a run Dependabot triggers gets
 # a read-only GITHUB_TOKEN, which the `permissions` below raise, and sees
-# only Dependabot secrets, never Actions secrets. So PR_BOT_PRIVATE_KEY must
-# also exist as a Dependabot secret available to this repository. Fork PRs
+# only Dependabot secrets, never Actions secrets or variables: hence
+# DEPENDABOT_APPROVER_CLIENT_ID and DEPENDABOT_APPROVER_PRIVATE_KEY. Fork PRs
 # get no secrets and a read-only token, and fail the gates anyway.
 #
 # On pull_request the workflow definition comes from the PR's merge commit,
@@ -153,16 +157,16 @@ jobs:
 
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           echo "PR #${PR_NUMBER} re-validated at ${EVENT_HEAD_SHA}"
-      # Only after validation passed. PR_BOT_PRIVATE_KEY resolves from the
-      # Dependabot secrets (see the header); with no key or client id this step
+      # Only after validation passed. Both values are Dependabot secrets (see
+      # the header); with no key or client id this step
       # fails, nothing is approved, and the PR waits for a person. The token
       # is scoped to this repository and to pull requests only.
-      - name: Mint the PR bot token
+      - name: Mint the approver token
         id: pr-bot
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
-          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+          client-id: ${{ secrets.DEPENDABOT_APPROVER_CLIENT_ID }}
+          private-key: ${{ secrets.DEPENDABOT_APPROVER_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-pull-requests: write
@@ -263,7 +267,7 @@ jobs:
           # The main ruleset's dismiss-stale-reviews rule already retracts
           # approvals on push; this makes the workflow self-contained rather
           # than dependent on that setting staying configured. Every bot's
-          # approval goes: the PR bot App's (its login is the App's slug plus
+          # approval goes: the approver App's (its login is the App's slug plus
           # [bot]), github-actions[bot]'s from before the App, and any other
           # bot's, so after a person's push only a person's review stands.
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \

@@ -576,9 +576,10 @@ outside the repository with the release evidence.
 
 `dependabot-auto-merge.yml` auto-approves and auto-merges **lockfile-only,
 single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request` workflow
-that never checks out or executes PR-controlled code. The approval is the org PR bot App's,
-with a token minted only after validation and scoped to this repository's pull requests;
-its private key must exist as a Dependabot secret, `PR_BOT_PRIVATE_KEY`, because
+that never checks out or executes PR-controlled code. The approval is the Dependabot approver App's,
+installed on this repository alone with only `pull_requests: write`, its token minted only after
+validation and scoped to this repository; its client id and private key are this repository's
+Dependabot secrets, `DEPENDABOT_APPROVER_CLIENT_ID` and `DEPENDABOT_APPROVER_PRIVATE_KEY`, because
 Dependabot-triggered `pull_request` runs see only Dependabot secrets. Everything else —
 bundler major, all github-actions updates — is human-gated. The approval is
 created through the API pinned to the validated head commit, and the merge is
