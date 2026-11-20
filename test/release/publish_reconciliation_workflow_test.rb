@@ -403,7 +403,7 @@ class WorkflowPolicyTest < Minitest::Test
     assert_equal "${{ steps.pr-bot.outputs.token }}", steps.fetch(2).fetch("env").fetch("PR_BOT_TOKEN")
 
     boundary = steps.fetch(2).fetch("run")
-    assert_includes boundary, %q{GH_TOKEN="$PR_BOT_TOKEN" gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews"}
+    assert_includes boundary, 'GH_TOKEN="$PR_BOT_TOKEN" gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews"'
     assert_includes boundary, "revalidate_current_pr()"
     assert_equal [ "before approval", "before merge" ],
       boundary.scan(/^\s*revalidate_current_pr "([^"]+)"$/).flatten
