@@ -10,7 +10,7 @@ class WorkflowPolicyTest < Minitest::Test
   CI = File.join(ROOT, ".github/workflows/ci.yml")
   DEPENDABOT = File.join(ROOT, ".github/workflows/dependabot-auto-merge.yml")
   ALLOWED_ACTION_REPOSITORIES = %w[
-    actions/attest actions/checkout actions/dependency-review-action
+    actions/attest actions/checkout actions/create-github-app-token actions/dependency-review-action
     actions/download-artifact actions/setup-go actions/upload-artifact
     dependabot/fetch-metadata github/codeql-action
     rubygems/configure-rubygems-credentials ruby/setup-ruby
@@ -362,7 +362,9 @@ class WorkflowPolicyTest < Minitest::Test
     jobs = workflow(DEPENDABOT).fetch("jobs")
     all_uses = jobs.values.flat_map { |job| job.fetch("steps").filter_map { |step| step["uses"] } }
     refute all_uses.any? { |entry| entry.start_with?("actions/checkout@") }
-    assert_equal [ "dependabot/fetch-metadata" ], all_uses.map { |entry| entry.split("@").first }.uniq
+    assert_equal [ "dependabot/fetch-metadata", "actions/create-github-app-token" ],
+      all_uses.map { |entry| entry.split("@").first }.uniq
+    assert_equal "pull_request", workflow(DEPENDABOT).fetch(true)
 
     metadata_condition = jobs.fetch("metadata").fetch("if")
     assert_includes metadata_condition, "github.event.pull_request.state == 'open'"
@@ -371,7 +373,20 @@ class WorkflowPolicyTest < Minitest::Test
     assert_includes metadata_condition, "github.event.pull_request.base.ref == 'main'"
     assert_includes metadata_condition, "github.event.pull_request.head.repo.full_name == github.repository"
 
+    automerge_condition = jobs.fetch("automerge").fetch("if")
+    assert_includes automerge_condition, "github.actor == 'dependabot[bot]'"
+    assert_includes automerge_condition, "github.triggering_actor == 'dependabot[bot]'"
+    assert_includes automerge_condition, "github.event.pull_request.user.login == 'dependabot[bot]'"
+    assert_includes automerge_condition, "startsWith(github.event.pull_request.head.ref, 'dependabot/bundler/')"
+
     steps = jobs.fetch("automerge").fetch("steps")
+    # Validation, then the App token, then approval and merge: the key is
+    # never used before the PR has been validated.
+    assert_equal [ nil, "actions/create-github-app-token", nil ],
+      steps.map { |step| step["uses"]&.split("@")&.first }
+    assert_equal({ "permission-pull-requests" => "write" },
+      steps.fetch(1).fetch("with").select { |key, _| key.start_with?("permission-") })
+    assert_equal "${{ github.event.repository.name }}", steps.fetch(1).fetch("with").fetch("repositories")
     initial = steps.fetch(0).fetch("run")
     assert_includes initial, '[ "$state" = "open" ]'
     assert_includes initial, '[ "$draft" = "false" ]'
@@ -384,9 +399,11 @@ class WorkflowPolicyTest < Minitest::Test
     assert_includes initial, 'echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"'
 
     assert_equal "${{ steps.validation.outputs.base_sha }}",
-      steps.fetch(1).fetch("env").fetch("VALIDATED_BASE_SHA")
+      steps.fetch(2).fetch("env").fetch("VALIDATED_BASE_SHA")
+    assert_equal "${{ steps.pr-bot.outputs.token }}", steps.fetch(2).fetch("env").fetch("PR_BOT_TOKEN")
 
-    boundary = steps.fetch(1).fetch("run")
+    boundary = steps.fetch(2).fetch("run")
+    assert_includes boundary, %q{GH_TOKEN="$PR_BOT_TOKEN" gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews"}
     assert_includes boundary, "revalidate_current_pr()"
     assert_equal [ "before approval", "before merge" ],
       boundary.scan(/^\s*revalidate_current_pr "([^"]+)"$/).flatten

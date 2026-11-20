@@ -29,6 +29,7 @@ class DependabotWorkflowHarnessTest < Minitest::Test
     state_path = ENV.fetch("GH_STATE")
     state = File.exist?(state_path) ? JSON.parse(File.binread(state_path)) : {}
     File.open(ENV.fetch("GH_LOG"), "ab") { |file| file.puts(JSON.generate(ARGV)) }
+    File.open(ENV.fetch("GH_TOKEN_LOG"), "ab") { |file| file.puts(ENV.fetch("GH_TOKEN", "")) }
 
     take = lambda do |key|
       values = fixture.fetch(key)
@@ -99,6 +100,7 @@ class DependabotWorkflowHarnessTest < Minitest::Test
     @fixture_path = File.join(@directory, "fixture.json")
     @state_path = File.join(@directory, "state.json")
     @log_path = File.join(@directory, "gh.jsonl")
+    @token_log_path = File.join(@directory, "gh-tokens.txt")
     @github_output = File.join(@directory, "github-output")
   end
 
@@ -171,6 +173,14 @@ class DependabotWorkflowHarnessTest < Minitest::Test
     assert_equal 2, calls.count { |call| commits_read?(call) }
     assert_equal 1, calls.count { |call| review_created?(call) }
     assert_equal 1, calls.count { |call| call.first(2) == [ "pr", "merge" ] }
+
+    # Only the approval carries the App token; every read and the merge use
+    # GITHUB_TOKEN.
+    tokens = File.readlines(@token_log_path, chomp: true)
+    assert_equal calls.length, tokens.length
+    calls.zip(tokens).each do |call, token|
+      assert_equal(review_created?(call) ? "fixture-app" : "fixture", token, call.inspect)
+    end
   end
 
   def test_each_identity_guard_fails_closed_before_approval
@@ -212,6 +222,13 @@ class DependabotWorkflowHarnessTest < Minitest::Test
       refute_predicate status, :success?, name
       refute privileged_call_logged?, name
     end
+  end
+
+  def test_missing_app_token_fails_closed_before_approval
+    write_fixture
+    _stdout, _stderr, status = run_script(@boundary_script, "VALIDATED_BASE_SHA" => BASE_SHA, "PR_BOT_TOKEN" => "")
+    refute_predicate status, :success?
+    refute privileged_call_logged?
   end
 
   def test_identity_or_signature_change_after_approval_prevents_merge
@@ -265,7 +282,7 @@ class DependabotWorkflowHarnessTest < Minitest::Test
 
     def write_fixture(prs: [ valid_pr ], commits: [ [ valid_commit ] ], files: [ "Gemfile.lock" ])
       File.binwrite(@fixture_path, JSON.generate("prs" => prs, "commits" => commits, "files" => files))
-      [ @state_path, @log_path, @github_output ].each { |path| FileUtils.rm_f(path) }
+      [ @state_path, @log_path, @token_log_path, @github_output ].each { |path| FileUtils.rm_f(path) }
       File.binwrite(@github_output, "")
     end
 
@@ -275,8 +292,10 @@ class DependabotWorkflowHarnessTest < Minitest::Test
         "GH_FIXTURE" => @fixture_path,
         "GH_STATE" => @state_path,
         "GH_LOG" => @log_path,
+        "GH_TOKEN_LOG" => @token_log_path,
         "GITHUB_OUTPUT" => @github_output,
         "GH_TOKEN" => "fixture",
+        "PR_BOT_TOKEN" => "fixture-app",
         "REPO" => REPOSITORY,
         "PR_NUMBER" => PR_NUMBER,
         "PR_URL" => "https://github.com/#{REPOSITORY}/pull/#{PR_NUMBER}",

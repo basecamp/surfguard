@@ -4,12 +4,30 @@ name: Dependabot auto-merge
 # (bundler major, all github-actions PRs) stays human-gated: never
 # auto-approved, never auto-merged.
 #
-# Why pull_request_target: the workflow definition comes from the BASE branch,
-# so PR-controlled code can never redefine the job that holds write
-# permissions. The trade-off (a privileged token alongside an untrusted head)
-# is neutralized by never checking out or executing anything PR-controlled:
-# both jobs work exclusively through the GitHub API.
-on: pull_request_target # zizmor: ignore[dangerous-triggers] -- no checkout and no PR-controlled code executes anywhere in this workflow; jobs are gated to the dependabot actor + triggering_actor + author + head-ref prefix, and the automerge job re-validates head SHA, changed-file allowlist, and Dependabot-signed commits via the API before acting
+# The approval comes from the org's PR bot App, not GITHUB_TOKEN: the org
+# doesn't let Actions create or approve pull requests. main requires one
+# approving review, so an approval that this workflow can't give leaves the
+# PR waiting for a person, which is the safe failure.
+#
+# Why pull_request, not pull_request_target: GitHub blocks
+# pull_request_target by default in public repositories (this one) from
+# 2026-12-02, and pull_request_target puts a privileged token and secrets
+# next to an untrusted head. On pull_request, a run Dependabot triggers gets
+# a read-only GITHUB_TOKEN, which the `permissions` below raise, and sees
+# only Dependabot secrets, never Actions secrets. So PR_BOT_PRIVATE_KEY must
+# also exist as a Dependabot secret available to this repository. Fork PRs
+# get no secrets and a read-only token, and fail the gates anyway.
+#
+# On pull_request the workflow definition comes from the PR's merge commit,
+# not from main. Dependabot's bundler PRs touch only Gemfile and Gemfile.lock,
+# and the API validation below refuses any file but Gemfile.lock before the
+# App token is minted.
+# A Dependabot github-actions PR rewrites `uses:` pins, including the ones in
+# this file, but its head ref is dependabot/github_actions/..., so every job
+# here is skipped before a newly pinned action could run with the key.
+# Nothing PR-controlled is checked out or executed: every job works through
+# the GitHub API.
+on: pull_request
 
 permissions: {}
 
@@ -41,17 +59,16 @@ jobs:
     name: Auto-merge bundler patch/minor
     needs: metadata
     # Actor/author gating happened at the metadata job (a skipped metadata job
-    # skips this one), and the first step below independently re-validates all
-    # of it via the API before anything privileged runs. fetch-metadata emits
-    # the full "version-update:" prefix — match it exactly.
-    if: >
-      needs.metadata.outputs.package-ecosystem == 'bundler' &&
-      (needs.metadata.outputs.update-type == 'version-update:semver-patch' ||
-       needs.metadata.outputs.update-type == 'version-update:semver-minor')
+    # skips this one); it is repeated here so this job, which holds the App
+    # key, never depends on another job's condition alone. The first step
+    # below independently re-validates all of it via the API before the App
+    # token is minted. fetch-metadata emits the full "version-update:" prefix
+    # — match it exactly.
+    if: github.actor == 'dependabot[bot]' && github.triggering_actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]' && startsWith(github.event.pull_request.head.ref, 'dependabot/bundler/') && needs.metadata.outputs.package-ecosystem == 'bundler' && (needs.metadata.outputs.update-type == 'version-update:semver-patch' || needs.metadata.outputs.update-type == 'version-update:semver-minor') # zizmor: ignore[bot-conditions] -- same pairing as the metadata job: actor + triggering_actor with the GitHub-owned PR author and head ref, on pull_request, where GitHub sets the actor from who triggered the event; the first step re-checks them through the API before the App token is minted
     runs-on: ubuntu-latest
     permissions:
       contents: write # gh pr merge --auto needs the merge permission
-      pull-requests: write # gh pr review --approve and auto-merge state
+      pull-requests: write # auto-merge state (the approval uses the App token)
     timeout-minutes: 10
     steps:
       - name: Re-validate the PR via the API (nothing checked out, nothing executed)
@@ -136,9 +153,23 @@ jobs:
 
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
           echo "PR #${PR_NUMBER} re-validated at ${EVENT_HEAD_SHA}"
+      # Only after validation passed. PR_BOT_PRIVATE_KEY resolves from the
+      # Dependabot secrets (see the header); with no key or client id this step
+      # fails, nothing is approved, and the PR waits for a person. The token
+      # is scoped to this repository and to pull requests only.
+      - name: Mint the PR bot token
+        id: pr-bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.PR_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.PR_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
       - name: Approve at the validated head and enable auto-merge (squash)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BOT_TOKEN: ${{ steps.pr-bot.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -146,6 +177,7 @@ jobs:
           VALIDATED_BASE_SHA: ${{ steps.validation.outputs.base_sha }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
+          [ -n "$PR_BOT_TOKEN" ] || fail "no PR bot token"
 
           # This is called at both privilege boundaries. A stable head alone is
           # insufficient: the PR must still be open/non-draft, authored by
@@ -186,8 +218,9 @@ jobs:
           # job strips of pending auto-merge. There is no merge queue, so no
           # merge_group hook exists to revalidate in; these branch-rule gates
           # are the merge-time revalidation.
+          # The approval is the App's; GITHUB_TOKEN reads and arms auto-merge.
           revalidate_current_pr "before approval"
-          gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+          GH_TOKEN="$PR_BOT_TOKEN" gh api --method POST "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
             -f commit_id="$EVENT_HEAD_SHA" \
             -f event=APPROVE \
             -f body="Auto-approving a Dependabot bundler patch/minor update at ${EVENT_HEAD_SHA}. The required CI check still gates the merge."
@@ -229,9 +262,12 @@ jobs:
         run: |
           # The main ruleset's dismiss-stale-reviews rule already retracts
           # approvals on push; this makes the workflow self-contained rather
-          # than dependent on that setting staying configured.
+          # than dependent on that setting staying configured. Every bot's
+          # approval goes: the PR bot App's (its login is the App's slug plus
+          # [bot]), github-actions[bot]'s from before the App, and any other
+          # bot's, so after a person's push only a person's review stands.
           gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "APPROVED") | .id' |
+            --jq '.[] | select(.user.type == "Bot" and .state == "APPROVED") | .id' |
           while IFS= read -r review_id; do
             gh api --method PUT "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${review_id}/dismissals" \
               -f message="Dismissing the automated approval: a non-Dependabot actor pushed to this PR after it was granted."

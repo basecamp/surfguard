@@ -575,8 +575,11 @@ outside the repository with the release evidence.
 ## Dependabot automation
 
 `dependabot-auto-merge.yml` auto-approves and auto-merges **lockfile-only,
-single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request_target` workflow
-that never checks out or executes PR-controlled code. Everything else —
+single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request` workflow
+that never checks out or executes PR-controlled code. The approval is the org PR bot App's,
+with a token minted only after validation and scoped to this repository's pull requests;
+its private key must exist as a Dependabot secret, `PR_BOT_PRIVATE_KEY`, because
+Dependabot-triggered `pull_request` runs see only Dependabot secrets. Everything else —
 bundler major, all github-actions updates — is human-gated. The approval is
 created through the API pinned to the validated head commit, and the merge is
 pinned with `--match-head-commit`. Automation requires an open, non-draft PR
@@ -585,8 +588,8 @@ repository's protected `main`. The current base/head identity and every
 commit's Dependabot author, committer, and verified signature are checked
 again immediately before approval and immediately before merge enablement. A
 human push to a Dependabot PR triggers a revoke job that disables any pending
-auto-merge (the dismiss-stale-reviews branch rule retracts the bot approval at
-the same time). The trusted-base validator and base/head lockfiles are fetched
+auto-merge and dismisses every bot approval (the dismiss-stale-reviews branch rule
+retracts them at the same time). The trusted-base validator and base/head lockfiles are fetched
 through the API at exact SHAs; PR code is never checked out. Source, structure,
 prerelease, major, transitive, grouped, ambiguous, added, or removed changes
 require human review. CODEOWNERS uses an ownerless trailing `/Gemfile.lock` pattern to remove
