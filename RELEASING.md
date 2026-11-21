@@ -366,14 +366,14 @@ Setup payloads, each **read back** to assert the declared invariant. Creation
 calls are one-time operations and can report an already-existing resource when
 repeated. Replace IDs where noted.
 
-1. **Workflow token defaults** — read-only token, bot approvals enabled
-   (required for zero-touch Dependabot automation), and the repository's
-   auto-merge setting (independent of token permissions; `gh pr merge --auto`
+1. **Workflow token defaults** — read-only token, Actions approvals off (the
+   Dependabot approver App approves; see [Dependabot automation](#dependabot-automation)),
+   and the repository's auto-merge setting (independent of token permissions; `gh pr merge --auto`
    fails without it):
 
    ```sh
    gh api -X PUT repos/basecamp/surfguard/actions/permissions/workflow \
-     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
    gh api repos/basecamp/surfguard/actions/permissions/workflow
 
    gh api -X PATCH repos/basecamp/surfguard -F allow_auto_merge=true
@@ -575,8 +575,12 @@ outside the repository with the release evidence.
 ## Dependabot automation
 
 `dependabot-auto-merge.yml` auto-approves and auto-merges **lockfile-only,
-single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request_target` workflow
-that never checks out or executes PR-controlled code. Everything else —
+single-direct-dependency Bundler patch/minor** updates, via a constrained `pull_request` workflow
+that never checks out or executes PR-controlled code. The approval is the Dependabot approver App's,
+installed on this repository alone with only `pull_requests: write`, its token minted only after
+validation and scoped to this repository; its client id and private key are this repository's
+Dependabot secrets, `DEPENDABOT_APPROVER_CLIENT_ID` and `DEPENDABOT_APPROVER_PRIVATE_KEY`, because
+Dependabot-triggered `pull_request` runs see only Dependabot secrets. Everything else —
 bundler major, all github-actions updates — is human-gated. The approval is
 created through the API pinned to the validated head commit, and the merge is
 pinned with `--match-head-commit`. Automation requires an open, non-draft PR
@@ -585,8 +589,8 @@ repository's protected `main`. The current base/head identity and every
 commit's Dependabot author, committer, and verified signature are checked
 again immediately before approval and immediately before merge enablement. A
 human push to a Dependabot PR triggers a revoke job that disables any pending
-auto-merge (the dismiss-stale-reviews branch rule retracts the bot approval at
-the same time). The trusted-base validator and base/head lockfiles are fetched
+auto-merge and dismisses every bot approval (the dismiss-stale-reviews branch rule
+retracts them at the same time). The trusted-base validator and base/head lockfiles are fetched
 through the API at exact SHAs; PR code is never checked out. Source, structure,
 prerelease, major, transitive, grouped, ambiguous, added, or removed changes
 require human review. CODEOWNERS uses an ownerless trailing `/Gemfile.lock` pattern to remove
