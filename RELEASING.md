@@ -366,14 +366,14 @@ Setup payloads, each **read back** to assert the declared invariant. Creation
 calls are one-time operations and can report an already-existing resource when
 repeated. Replace IDs where noted.
 
-1. **Workflow token defaults** — read-only token, bot approvals enabled
-   (required for zero-touch Dependabot automation), and the repository's
-   auto-merge setting (independent of token permissions; `gh pr merge --auto`
+1. **Workflow token defaults** — read-only token, Actions approvals off (the
+   Dependabot approver App approves; see [Dependabot automation](#dependabot-automation)),
+   and the repository's auto-merge setting (independent of token permissions; `gh pr merge --auto`
    fails without it):
 
    ```sh
    gh api -X PUT repos/basecamp/surfguard/actions/permissions/workflow \
-     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true
+     -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
    gh api repos/basecamp/surfguard/actions/permissions/workflow
 
    gh api -X PATCH repos/basecamp/surfguard -F allow_auto_merge=true
